@@ -26,8 +26,8 @@ mygrey <- rgb(0.2, 0.2, 0.2, 0.4)
 mymauve <- rgb(0.8, 0.1, 0.8, 0.4)
 
 
-load('model.RData')
-load('D.RData')
+load('data/model.RData')
+load('data/D.RData')
 
 sample_names <- c('K1', 'K2', 'M1', 'M2', 'T1', 'T2', paste('HD', 1:4, sep = ''), paste('K', 1:17 + 2, sep = ''), paste('M', 1:8 + 2, sep = ''), paste('T', 1:21 + 2, sep = ''))
 sample_names1 <- c('BM', 'BM', 'S', 'S', 'T', 'T', rep('PB', 4), rep('BM', 17), rep('S', 8), rep('T', 21))
@@ -357,25 +357,27 @@ cross tabulate count clustering and marker clustering
 ```
 
 
+
+```{r, echo=FALSE}
+
 # Multiview clustering
 
-Try making a graph between count clusters, based on whether they have marker clusters in common (and vice versa). 
+#Try making a graph between count clusters, based on whether they have marker clusters in common (and vice versa). 
 
-```{r}
-CL_counts <- hclust(dist(t(donor_coords[, -1])), method = 'ward.D2')
-cut_CL_counts <- cutree(CL_counts, k = 2:20)
-
-xtab_CL <- table(list(cut_CL_counts[, 19], cut_CL[, 19]))
-
-xtab_df <- data.frame(V1 = paste(rep(1:nrow(xtab_CL), ncol(xtab_CL)), 'A', sep = ''), V2 = paste(rep(1:ncol(xtab_CL), rep(nrow(xtab_CL), ncol(xtab_CL))), 'B', sep = ''), weights = c(xtab_CL))
-xtab_df <- xtab_df[xtab_df$weights > 0, ]
-
-G <- graph_from_data_frame(xtab_df, directed = FALSE)
-E(G)$weight <- (xtab_df$weights/max(xtab_df$weights))^1.2
-V(G)$color <- rep(c(myred, myblue), c(nrow(xtab_CL), ncol(xtab_CL)))
-#layout <- layout.reingold.tilford(G, circular=T)
-layout <- layout.fruchterman.reingold(G, niter = 10000)
-plot(G, edge.width = E(G)$weight*10, vertex.color = V(G)$color, layout = layout)
+# CL_counts <- hclust(dist(t(donor_coords[, -1])), method = 'ward.D2')
+# cut_CL_counts <- cutree(CL_counts, k = 2:20)
+# 
+# xtab_CL <- table(list(cut_CL_counts[, 19], cut_CL[, 19]))
+# 
+# xtab_df <- data.frame(V1 = paste(rep(1:nrow(xtab_CL), ncol(xtab_CL)), 'A', sep = ''), V2 = paste(rep(1:ncol(xtab_CL), rep(nrow(xtab_CL), ncol(xtab_CL))), 'B', sep = ''), weights = c(xtab_CL))
+# xtab_df <- xtab_df[xtab_df$weights > 0, ]
+# 
+# G <- graph_from_data_frame(xtab_df, directed = FALSE)
+# E(G)$weight <- (xtab_df$weights/max(xtab_df$weights))^1.2
+# V(G)$color <- rep(c(myred, myblue), c(nrow(xtab_CL), ncol(xtab_CL)))
+# #layout <- layout.reingold.tilford(G, circular=T)
+# layout <- layout.fruchterman.reingold(G, niter = 10000)
+# plot(G, edge.width = E(G)$weight*10, vertex.color = V(G)$color, layout = layout)
 
 ```
 
