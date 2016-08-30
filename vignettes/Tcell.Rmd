@@ -1,0 +1,812 @@
+---
+title: "Stimulation"
+author: "Kristen Feher"
+date: "27 Apr 2016"
+output: html_document
+---
+
+First load your data and supply a vector of sample names. 
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+library(cluster)
+library(ggplot2)
+library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+devtools::load_all(".")
+# load('~/2015/2015-10-30_CompareDonors/data/comp_mtx.RData')
+# load('~/2015/2015-10-30_CompareDonors/data/exprs_all_lin_no_offset.RData')
+# sample_names <- c('K1', 'K2', 'M1', 'M2', 'T1', 'T2', paste('HD', 1:4, sep = ''), paste('K', 1:17 + 2, sep = ''), paste('M', 1:8 + 2, sep = ''), paste('T', 1:21 + 2, sep = ''))
+# sample_names1 <- c('BM', 'BM', 'S', 'S', 'T', 'T', rep('PB', 4), rep('BM', 17), rep('S', 8), rep('T', 21))
+# 
+
+# sample_names <- sample_names[-c(11, 21, 28)]
+# sample_names1 <- sample_names1[-c(11, 21, 28)]
+
+fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/')
+Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
+metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
+
+markers <- c('IL10', 'IL22', 'GM-CSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
+
+C <- factor(rep(1:10, 8))
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c("b-LP505 525_50-B-A", "b-LP650 675_20-A-A", "r-670_30-C-A", "v-LP555 575_15-B-A", "v-LP600 610_20-A-A", "yg-585_15-E-A", "yg-LP600 610_20-D-A", "yg-LP750 780_60-A-A"), lgcl)
+D_comp <- mapply(function(x) compensate(x, description(x)$`$SPILLOVER`), Data, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) exprs(transform(x, L)), D_comp, SIMPLIFY = FALSE)
+
+
+# df_cd154 <- sapply(1:8, function(i) sapply(1:2, function(j) sapply(1:5, function(k) {
+#   cbind(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == levels(metadata$X2)[j] & metadata$X3 == levels(metadata$X3)[k]][[1]][, 14], i, k + 5 * (j-1))
+# }
+# )
+# )
+# )
+# df_cd154 <- do.call(rbind, df_cd154)
+# colnames(df_cd154) <- c('cd154', 'donor', 'stim')
+# df_cd154 <- as.data.frame(df_cd154)
+# df_cd154$donor <- factor(df_cd154$donor)
+# df_cd154$stim <- factor(df_cd154$stim)
+# 
+# 
+# for (i in c(1, 3:10)){
+#   fn <- paste('cd154_', i, '.pdf', sep = '')
+# pdf(fn)
+# print(
+# ggplot(df_cd154[df_cd154$stim == as.character(i) | df_cd154$stim == '2', ], aes(cd154, colour = stim, fill = stim)) + geom_density(alpha = 0.1) + facet_wrap(~donor)
+# )
+# dev.off()
+# }
+
+Data <- mapply(exprs, Data)
+
+q <- lapply(1:8, function(i) quantile(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == '1' & metadata$X3 == '2'][[1]][, 14], 0.95))
+i = 1
+D_comp_cd154 <- lapply(1:8, function(i) {
+tmp <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp <- mapply(function(x) x[x[, 14] > q[i], ], tmp, SIMPLIFY = FALSE)
+return(tmp)
+}
+)
+D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
+
+Data_cd154 <- lapply(1:8, function(i) {
+tmp <- Data[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp1 <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp <- mapply(function(x, y) x[y[, 14] > q[i], ], tmp, tmp1, SIMPLIFY = FALSE)
+return(tmp)
+}
+)
+Data_cd154 <- unlist(Data_cd154, recursive = FALSE)
+
+
+
+
+
+set.seed(42)
+D_s <- sample_data(Data_cd154, D_comp_cd154, 1000)
+
+sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
+stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
+
+
+```
+
+
+```{r,echo=FALSE}
+D1 <- D_s$D - min(D_s$D) + 1
+
+D_transform <- D1[, markers_index][, -c(4, 6)]
+D_transform <- t(apply(D_transform, 1, function(x) x/sum(x)))
+D_transform <- logratio_data(D_transform)
+
+
+D_transform <- svd(D_transform)$u
+
+
+
+```
+
+
+
+```{r,echo=FALSE}
+# bins_k2 <- lapply(3:30, function(.l) make_bins(D_transform, D_s$sample_fac, 2, .l))
+# bins_k3 <- lapply(3:30, function(.l) make_bins(D_transform, D_s$sample_fac, 3, .l))
+# bins_k4 <- lapply(3:30, function(.l) make_bins(D_transform, D_s$sample_fac, 4, .l))
+
+```
+
+
+```{r,echo=FALSE}
+# ad <- lapply(list(bins_k2, bins_k3, bins_k4), function(.b)
+#   lapply(1:28, function(i) {
+#     tab1 <- do.call(rbind, .b[[i]]$xtab) 
+#     tab1 <- replace_zero(tab1)
+#     ad <- as.matrix(aDist_mtx(tab1))
+#     return(ad)
+#   })
+# )
+
+```
+
+
+
+```{r,echo=FALSE}
+# ndonors <- ncol(ad[[1]][[1]])
+# 
+# grv <- lapply(ad, function(.a) sapply(1:27, function(i) {
+#   GRV(create.G(ndonors, .a[[i]]), create.G(ndonors, .a[[i+1]]))
+# }
+# )
+# )
+# 
+# grv_k <- sapply(1:28, function(i) c(GRV(create.G(ndonors, ad[[1]][[i]]), create.G(ndonors, ad[[2]][[i]])), GRV(create.G(ndonors, ad[[2]][[i]]), create.G(ndonors, ad[[3]][[i]]))))
+# 
+# par(mfrow = c(2, 3))
+# plot(3:29, grv[[1]], ylim = c(0.75, 1), xlab = 'l', ylab = 'GRV(l, l+1)', main = 'k = 2', type = 'l')
+# plot(3:29, grv[[2]], ylim = c(0.75, 1), xlab = 'l', ylab = 'GRV(l, l+1)', main = 'k = 3', type = 'l')
+# plot(3:29, grv[[3]], ylim = c(0.75, 1), xlab = 'l', ylab = 'GRV(l, l+1)', main = 'k = 4', type = 'l')
+# plot(3:28, sapply(1:26, function(i) grv[[1]][i+1] - grv[[1]][i]), xlab = 'l', ylab = 'GRV(l+1, l+2) - GRV(l, l+1)', main = 'k = 2', type = 'l')
+# abline(h = 0)
+# plot(3:28, sapply(1:26, function(i) grv[[2]][i+1] - grv[[2]][i]), xlab = 'l', ylab = 'GRV(l+1, l+2) - GRV(l, l+1)', main = 'k = 3', type = 'l')
+# abline(h = 0)
+# plot(3:28, sapply(1:26, function(i) grv[[3]][i+1] - grv[[3]][i]), xlab = 'l', ylab = 'GRV(l+1, l+2) - GRV(l, l+1)', main = 'k = 4', type = 'l')
+# abline(h = 0, v = 5)
+
+
+
+```
+
+
+```{r,echo=FALSE}
+# par(mfrow = c(1, 2))
+# plot(3:30, grv_k[1, ], xlab = 'l', ylab = 'GRV(k, k+1)', main = 'k = 2, 3')
+# plot(3:30, grv_k[2, ], xlab = 'l', ylab = 'GRV(k, k+1)', main = 'k = 3, 4')
+# abline(v = 15)
+
+# L = 15
+```
+
+
+```{r,echo=FALSE}
+model <- make_bins(D_transform, D_s$sample_fac, 4, 15)
+donor_coords <- get_xtab(model, 1, rep(1:8, 8))
+donor_coords_raw <- donor_coords
+#donor_coords <- model$xtab
+donor_coords[donor_coords == 0] <- min(donor_coords[donor_coords > 0]) / 10
+donor_coords <- logratio_data(donor_coords)
+
+data_bins <- get_bins_lineplot(model, w = 1, D_s$D_comp, sample_fac = D_s$sample_fac)
+data_bins_median <- mapply(function(x) apply(x, 2, median), data_bins[[1]])
+data_bins_median <- data_bins_median[markers_index, ]
+rownames(data_bins_median) <- markers
+
+
+
+```
+
+samples coloured according to stimulation
+
+```{r, echo=FALSE}
+
+#model <- make_bins(D_transform, D$sample_fac, 4, 14)
+#donor_coords <- get_xtab(model, 0.5, sample_names1)
+#donor_coords <- replace_zero(donor_coords)
+#donor_coords <- logratio_data(donor_coords)
+
+L <- svd(donor_coords)
+bp <- make_biplot(L, 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+text(bp$F, labels = rep(1:8, 8), col = rep(1:8, 8))
+# dev.off()
+```
+
+samples coloured according to donor. The donors aren't equally spread over the space but rather have preferential locations. 
+
+```{r, echo=FALSE}
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+text(bp$F, labels = rep(1:8, rep(8, 8)), col = rep(1:8, rep(8, 8)))
+```
+
+
+Look at table of markers (omit CD154) in MCA plot. 
+
+
+```{r,echo=FALSE}
+library(ca)
+bins <- t(data_bins_median)[, -8]
+
+make_burt <- function(X) {
+burt <- apply(X, 2, cut, 2, FALSE, TRUE)
+burt <- as.data.frame(burt)
+return(burt)
+}
+
+# top level
+
+burt <- make_burt(bins)
+MJ <- mjca(burt, lambda = 'JCA')
+par(mfrow = c(1, 1))
+plot(MJ$colpcoord[seq(2, 14, 2), 1:2], pch = 16, type = 'n')
+text(MJ$colpcoord[seq(2, 14, 2), 1:2], labels = colnames(burt))
+arrows(MJ$colpcoord[seq(1, 14, 2), 1], MJ$colpcoord[seq(1, 14, 2), 2], MJ$colpcoord[seq(2, 14, 2), 1], MJ$colpcoord[seq(2, 14, 2), 2])
+```
+
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive, at least 5 times positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. Nothing is positive for 5 markers. 
+
+
+```{r,echo=FALSE}
+
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[x == 2])/sum(donor_coords_raw))
+
+
+
+#at least double positive (total)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 8 & x == 2])/sum(donor_coords_raw))
+
+# at least triple positive
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 9 & x == 2])/sum(donor_coords_raw))
+
+# at least quadruple positive (almost nothing)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 10 & x == 2])/sum(donor_coords_raw))
+
+
+
+```
+
+
+```{r,echo=FALSE}
+
+# Check co-expression of IL10, IL4, IL5 with the other markers - IL10, IL4, IL5 are more likely to be coexpressed with each other and less likely to be coexpressed with IL22, IL17, IFNg, GMCSF. IL4, IL5 so extreme because of extremely small counts. 
+# 
+# 
+# lapply((1:7)[-1], function(i) {
+# t <- table(burt[, c(1, i)])/nrow(burt)
+# t(apply(t, 1, function(x) x/sum(x)))
+# }
+# )
+# 
+# lapply((1:7)[-4], function(i) {
+# t <- table(burt[, c(4, i)])/nrow(burt)
+# t(apply(t, 1, function(x) x/sum(x)))
+# }
+# )
+# 
+# lapply((1:7)[-6], function(i) {
+# t <- table(burt[, c(6, i)])/nrow(burt)
+# t(apply(t, 1, function(x) x/sum(x)))
+# }
+# )
+
+
+
+
+```
+
+
+make coexpression heatmap, combined over all stimulations
+
+```{r,echo=FALSE}
+replace_zero <- 
+function(X) {
+  X[X == 0] <- min(X[X > 0])/2
+  #X <- t(apply(X, 1, function(x) x/sum(x)))
+  return(X)
+}
+
+
+make_tab_double <- function(burt) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+      a <- length(which(burt[, i] == 2))/nrow(burt) # proportion positive for i
+      b <- length(which(burt[, i] == 2 & burt[, j] == 2))/length(which(burt[, j] == 2)) # proportion double positive, normalised to proportion positive for j
+      b/a
+    }
+    )
+  }
+  )
+  rownames(tab_double)<- colnames(burt)
+  colnames(tab_double)<- colnames(burt)
+  tab_double <- replace_zero(tab_double)
+  tab_double <- log(tab_double)
+  # pheatmap(tab_double)
+  # linear
+  # plot(log(apply(burt, 2, table)[2, ]), log(diag(tab_double)), pch = 16)
+  d <- diag(tab_double)
+  tab_double_scaled <- sweep(tab_double, 1, sqrt(d), '/')
+  tab_double_scaled <- sweep(tab_double_scaled, 2, sqrt(d), '/')
+  return(list(tab_raw = tab_double, tab_scaled = tab_double_scaled))
+}
+
+# scaling the matrix downweights the coexpression according to how many are positive for both markers individually
+make_tab_double_weighted <- function(burt, W) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+      #i = 1
+      #j = 4
+      #W <- colSums(donor_coords_raw)
+      pa <- sum(W[burt[, i] == 2])/sum(W)
+      pb <- sum(W[burt[, j] == 2])/sum(W)
+      pab <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+      if (pa == 0 | pb == 0) {return(0)} else {return(pab/(pa*pb))}
+#       a <- sum(W[burt[, i] == 2])/sum(W)
+#       if (sum(W[burt[, j] == 2]) > 0) {
+#         b <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W[burt[, j] == 2])
+#       } else {b <- 0}
+      #a <- length(which(burt[, i] == 2))/nrow(burt) # proportion positive for i
+      #b <- length(which(burt[, i] == 2 & burt[, j] == 2))/length(which(burt[, j] == 2)) # proportion double positive, normalised to proportion positive for j
+      # if (a > 0) {b/a} else {0}
+    }
+    )
+  }
+  )
+  rownames(tab_double)<- colnames(burt)
+  colnames(tab_double)<- colnames(burt)
+  # tab_double <- tab_double[c(1, 4, 6, 5, 3, 2, 7), c(1, 4, 6, 5, 3, 2, 7)]
+  w <- which(diag(tab_double) == 0)
+  if (length(w) > 0) {tab_double <- tab_double[-w, -w]}
+  w <- which(tab_double == 0)
+  tab_double[w] <- 1
+  tab_double <- log(tab_double)
+  # pheatmap(tab_double)
+  # linear
+  # plot(log(apply(burt, 2, table)[2, ]), log(diag(tab_double)), pch = 16)
+  d <- diag(tab_double)
+  tab_double_scaled <- sweep(tab_double, 1, sqrt(d), '/')
+  tab_double_scaled <- sweep(tab_double_scaled, 2, sqrt(d), '/')
+  return(list(tab_raw = tab_double, tab_scaled = tab_double_scaled))
+}
+
+make_tab_coexp <- function(burt, W) {
+  sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+     sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+    }
+    )
+  }
+  )
+  }
+
+
+
+
+```
+
+check frequencies of each marker in each stimulation as a proportion of total
+
+```{r,echo=FALSE}
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+
+cs <- colSums(donor_coords_raw)
+expr_mtx <- sapply(1:ncol(burt), function(j) sapply(1:length(W), function(i) (sum(W[[i]][burt[, j] == 2])/sum(W[[i]]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+colnames(expr_mtx) <- colnames(burt)
+rownames(expr_mtx) <- stim
+expr_mtx[expr_mtx == 0] <- 1
+pheatmap(log(expr_mtx))
+
+expr_mtx_all <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2])/sum(donor_coords_raw[i, ]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+expr_mtx_all[expr_mtx_all == 0] <- 1
+pheatmap(log(expr_mtx_all)[order(sample_fac$stim), ], cluster_rows = FALSE)
+par(mfrow = c(1, 2))
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$donor)
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$stim)
+
+```
+
+make coexpression heatmaps for all stimulations combined (scaled and raw)
+
+```{r,echo=FALSE}
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+tab_all <- make_tab_double_weighted(burt, colSums(donor_coords_raw))
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+tab_double_w <- mapply(function(x) make_tab_double_weighted(burt, x), W, SIMPLIFY = FALSE)
+
+w <- colnames(tab_all$tab_scaled) %in% colnames(tab_double_w[[1]]$tab_scaled)
+#tab_double_w[[1]]$tab_scaled/tab_all$tab_scaled[w, w]
+pheatmap(tab_all$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE, main = 'scaled' )
+pheatmap(tab_all$tab_raw, cluster_rows = FALSE, cluster_cols = FALSE, main = 'raw')
+```
+
+and then make coexpression heatmaps for each stimulation. 
+
+```{r,echo=FALSE}
+library(pls)
+
+for (i in 1:8) 
+  pheatmap(tab_double_w[[i]]$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE, main = stim[i])
+
+# trying to see if counts of individual markers can account for counts of double positives. it doesn't very well. 
+# X <- mapply(function(x) x$tab_scaled[lower.tri(x$tab_raw, diag = FALSE)], tab_double_w[-5])
+# df <- data.frame(y = I(log(expr_mtx)[-5, ]), X = I(t(X)))
+# pl <- plsr(y ~ X, data = df)
+# plot(pl, ncomp = 2, line = TRUE)
+# plot(pl, 'loadings')
+# abline(h = 0)
+# plot(pl, plottype = 'scores')
+# 
+# colnames(tab_double_w[[1]]$tab_scaled)
+# X <- mapply(function(x) x$tab_scaled[4, 5], tab_double_w[-5])
+# pairs(cbind(X, expr_mtx[-5, c(3, 5)]))
+# 
+# i = 1 # ref marker
+# K = 1 # stim
+# j = 1 # comparison marker
+# 
+# U <-
+# lapply(1:7, function(i) {
+#   do.call(rbind, 
+# lapply(1:8, function(K) {
+# X <- sum(W[[K]][burt[, i] == 2])
+# y <- sapply((1:7)[-i], function(j) sum(W[[K]][burt[, i] == 2 & burt[, j] == 2])/X)
+# cbind(X, y, K, (1:7)[-i], i)
+# }
+# )
+# )
+# }
+# )
+# U <- do.call(rbind, U)
+# U <- as.data.frame(U)
+# ggplot(U, aes(sqrt(X), sqrt(y), colour = factor(V4))) + geom_point() + facet_wrap(~ i)
+
+
+fac <- interaction(burt[, 5], burt[, 7])
+counts <- t(apply(donor_coords_raw, 1, function(x) by(x, fac, sum)))
+pairs(cbind(counts[, 1] + counts[, 3], counts[, c(2, 4)]), col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+pairs(counts, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+
+subcomp <- counts[, -1]
+subcomp <- t(apply(subcomp, 1, function(x) x/sum(x)))
+pairs(subcomp, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+
+
+# IFNg+IL17- and IFNgIL17 double negative are in a strong equilibrium, that is almost linear. As the proportion of double neg increases, there becomes slightly less IFNg+IL17- than expected, and the 'missing' cells are shared out between IFNg-IL17+ and IFNg+IL17+. Candida and Cleptum have more IFNg-IL17+. Ecoli has more IFNg+IL17+. 
+
+# here is a plot of 1.2, 2.1, 2.2 as a proportion of cells that are not double negative. The more double negative cells there are, the larger the proportion of non-double negatives are IL17+
+  par(mfrow = c(1, 3))
+  plot(counts[, 1], counts[, 2]/(1-counts[, 1]), type = 'n', main = 'IFNg+IL17-', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 2]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+  plot(counts[, 1], counts[, 3]/(1-counts[, 1]), type = 'n', main = 'IFNg-IL17+', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 3]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+  plot(counts[, 1], counts[, 4]/(1-counts[, 1]), type = 'n', main = 'IFNg+IL17+', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 4]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+
+q <- t(sapply(1:nrow(donor_coords), function(i) sapply(1:7, function(j) sum(donor_coords_raw[i, burt[, j] == 2]))))
+par(mfrow = c(3, 3))
+for (i in 1:7) {
+plot(counts[, 1], sqrt(q[, i]), type = 'n')
+text(counts[, 1], sqrt(q[, i]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+}
+
+
+
+marker_ratio <- lapply(c(1, 2, 3, 4, 6), function(.k) {
+  sapply(1:nrow(donor_coords_raw), function(i) {
+qa <- c(sum(donor_coords_raw[i, which(burt[, 5] == 1 & burt[, 7] == 1 & burt[, .k] == 2)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 1 & burt[, 7] == 2 & burt[, .k] == 2)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 2 & burt[, 7] == 1 & burt[, .k] == 2)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 2 & burt[, 7] == 2 & burt[, .k] == 2)])
+        )
+qb <- sum(donor_coords_raw[i, which(burt[, .k] == 2)])
+qc <- c(sum(donor_coords_raw[i, which(burt[, 5] == 1 & burt[, 7] == 1)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 1 & burt[, 7] == 2)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 2 & burt[, 7] == 1)]),
+        sum(donor_coords_raw[i, which(burt[, 5] == 2 & burt[, 7] == 2)])
+        )
+# how much should be in each category if no dependence on 3rd marker
+marker_ratio <- qa/(qb*qc)
+marker_ratio[is.nan(marker_ratio)] <- 1
+marker_ratio[marker_ratio == 0] <- 1
+marker_ratio <- log(marker_ratio)
+return(marker_ratio)
+}
+)
+}
+)
+
+K = 2
+par(mfrow = c(2, 2))
+for (i in 1:4) {
+plot(counts[, i], marker_ratio[[K]][i, ], type = 'n', main = paste(colnames(burt)[c(1, 2, 3, 4, 6)][K], levels(fac)[i], sep = ' '), ylab = 'fold change', xlab = 'counts')
+text(counts[, i], marker_ratio[[K]][i, ], labels = as.character(1:8, 8), col = rep(1:8, 8))
+abline(h = 0)
+}
+
+```
+
+
+
+Check dotplots with markers ordered as given by MCA plot. Coloured by IFNg, IL17
+
+```{r,echo=FALSE}
+
+# first split and dotplots
+fac <- interaction(bins[, 5] > 2.4, bins[, 7] > 2.4)
+pairs(bins, pch = 16, cex = 0.4, col = fac)
+#pairs(bins, pch  16, cex = 0.3, col = fac, xlim = c(1.5, 5), ylim = c(1.5, 5))
+#pairs(bins[, c(1, 4, 6)], pch = 16, cex = 0.7, col = fac)
+```
+
+make new subtables. Some basic statistics first: proportion of bins that are positive in a category, with respect to total positive (to see where most of the markers ended up after the first split), and proportion of bins in a category that are positive (to see which markers dominate the category). 
+
+```{r,echo=FALSE}
+
+
+# for (i in 1:4) {
+# fn <- paste('pairs_', levels(fac)[i], '.png', sep = '')
+# png(fn)
+# pairs(bins[fac == levels(fac)[i], c(1, 4, 3, 2, 5)], pch = 16, cex = 0.5, xlim = c(1, 5.5), ylim = c(1, 5.5))
+# dev.off()
+# }
+
+burt1 <- lapply(burt, factor)
+burt1 <- as.data.frame(burt1)
+# next level
+burt1 <- lapply(levels(fac), function(.f) burt1[fac == .f, -c(5, 7)])
+donor_coords1 <- lapply(levels(fac), function(.f) donor_coords_raw[, fac == .f])
+
+K <- 4
+q <- sapply(1:5, function(j) sapply(1:nrow(donor_coords1[[K]]), function(i) sum(donor_coords1[[K]][i, burt1[[K]][, j] == 2])))
+par(mfrow = c(2, 3))
+for (i in 1:5) {
+plot(1 - counts[, 1], q[, i]/(1 - counts[, 1]), type = 'n')
+text(1 - counts[, 1], q[, i]/(1 - counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+}
+
+
+# at least single positive
+sapply(1:5, function(j) sapply(1:4, function(i) sum(donor_coords1[[i]][, burt1[[i]][, j] == 2])/sum(donor_coords1[[i]])))
+
+# at least single positive, normalised to total single positive
+# sapply(1:5, function(j) sapply(1:4, function(i) sum(donor_coords1[[i]][, burt1[[i]][, j] == 2])/sum(donor_coords_raw[, burt[, -c(5, 7)][, j] == 2])))
+
+coexp_tab <- mapply(function(x, y) make_tab_double_weighted(x, colSums(y)), burt1, donor_coords1, SIMPLIFY = FALSE)
+
+pheatmap(coexp_tab[[2]]$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE)
+pheatmap(coexp_tab[[3]]$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE)
+
+# pairwise plots of counts in double negative. But we don't know the input number from the parent split, so relationship is not clear. 
+I = 1
+fac <- interaction(burt1[[I]][, 2], burt1[[I]][, 3])
+counts1 <- t(apply(donor_coords1[[I]], 1, function(x) by(x, fac, sum)))
+counts1 <- t(apply(counts1, 1, function(x) x/sum(x)))
+pairs(counts1, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+# normalise by input number. 
+# 1: the more double negatives in the input, the more double negatives here (makes sense)
+# 2: very roughly, the more double negatives, the fewer IL22+
+par(mfrow = c(1, 3))
+plot(counts1[, 1], counts1[, 2]/counts1[, 1], type = 'n')
+text(counts1[, 1], counts1[, 2]/counts1[, 1], labels = as.character(1:8, 8), col = rep(1:8, 8))
+plot(counts1[, 1], counts1[, 3]/counts1[, 1], type = 'n')
+text(counts1[, 1], counts1[, 3]/counts1[, 1], labels = as.character(1:8, 8), col = rep(1:8, 8))
+plot(counts1[, 1], counts1[, 4]/counts1[, 1], type = 'n')
+text(counts1[, 1], counts1[, 4]/counts1[, 1], labels = as.character(1:8, 8), col = rep(1:8, 8))
+
+
+
+# pairwise plots of counts in double negative. But we don't know the input number from the parent split, so relationship is not clear. 
+I = 3
+fac <- interaction(burt1[[I]][, 2], burt1[[I]][, 5])
+counts1 <- t(apply(donor_coords1[[I]], 1, function(x) by(x, fac, sum)))
+pairs(counts1, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+# normalise by input number. 
+# 1: the more double negatives in the input, the more double negatives here (makes sense)
+# 2: very roughly, the more double negatives, the fewer IL22+
+par(mfrow = c(1, 3))
+plot((1 - counts[, 1]), counts1[, 1]/(1 - counts[, 1]), type = 'n')
+text((1 - counts[, 1]), counts1[, 1]/(1 - counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+plot((1 - counts[, 1]), counts1[, 2]/(1 - counts[, 1]), type = 'n')
+text((1 - counts[, 1]), counts1[, 2]/(1 - counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+plot(counts1[, 1]/(1 - counts[, 1]), counts1[, 2]/(1 - counts[, 1]), type = 'n')
+text(counts1[, 1]/(1 - counts[, 1]), counts1[, 2]/(1 - counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+
+
+
+
+
+```
+
+loglinear model 
+
+
+```{r,echo=FALSE}
+
+count_tab <- xtabs(~ IL10 + IL22 + `GM-CSF` + IL4 + IFNg + IL5 + IL17, burt)
+
+```
+
+Investigate counts. First, simple boxplots on individual markers, conditioned on stimulation, and then on donor. 
+
+```{r,echo=FALSE}
+
+marker_count <-
+lapply(1:8, function(d) {
+  do.call(rbind, 
+  lapply(1:8, function(s) {
+t(sapply(1:7, function(i) c(d, s, i, by(donor_coords_raw[sample_fac$donor == d & sample_fac$stim == s, ], burt[, i], sum)[2])))
+}
+)
+)
+}
+)
+marker_count <- do.call(rbind, marker_count)
+colnames(marker_count) <- c('donor', 'stim', 'marker', 'count')
+marker_count <- as.data.frame(marker_count)
+marker_count$donor <- factor(marker_count$donor)
+marker_count$stim <- factor(marker_count$stim)
+marker_count$marker <- factor(markers[marker_count$marker])
+
+ggplot(marker_count, aes(stim, count^0.25)) + geom_boxplot() + facet_wrap(~ marker)
+
+ggplot(marker_count, aes(donor, count^0.25)) + geom_boxplot() + facet_wrap(~ marker)
+```
+
+Now look at multivariate properties of counts for individual markers. 
+
+```{r,echo=FALSE}
+marker_mtx <-
+lapply(1:8, function(d) {
+  do.call(rbind, 
+  lapply(1:8, function(s) {
+t(sapply(1:7, function(i) by(donor_coords_raw[sample_fac$donor == d & sample_fac$stim == s, ], burt[, i], sum)[2]))
+}
+)
+)
+}
+)
+marker_mtx1 <- do.call(rbind, marker_mtx)
+
+# pairs(marker_mtx, pch = 16, cex = 1, col = sample_fac$stim)
+
+# marker_mtx_scale <- replace_zero(marker_mtx)
+# gm <- apply(marker_mtx_scale, 1, function(x) exp(mean(log(x))))
+# marker_mtx_scale <- sweep(marker_mtx_scale, 1, gm, '/')
+# marker_mtx_scale <- scale(log(marker_mtx_scale))
+# L <- svd(marker_mtx_scale)
+# rownames(marker_mtx_scale) <- paste(sample_fac$donor, sample_fac$stim, sep = '_')
+# colnames(marker_mtx_scale) <- markers[-8]
+# pheatmap(marker_mtx_scale)
+# 
+# marker_mtx_centre <- marker_mtx_scale
+# marker_mtx_centre <- lapply(1:8, function(i) {
+# tmp <- marker_mtx_centre[sample_fac$donor == i, ]
+# tmp <- sweep(tmp, 2, colMeans(tmp), '-')
+# }
+# )
+# marker_mtx_centre <- do.call(rbind, marker_mtx_centre)
+# pheatmap(marker_mtx_centre)
+# 
+# 
+# plot(L$u, pch = 16, col= sample_fac$stim)
+# abline(h = 0, v = 0)
+# 
+# plot(L$u, pch = 16, col= sample_fac$donor)
+# abline(h = 0, v = 0)
+# 
+# library(ade4)
+# pca1 <- dudi.pca(marker_mtx_scale, scan = FALSE, nf = 4)
+# wi <- wca(pca1, factor(rep(1:8, rep(8, 8))), scannf = FALSE, nf = 3)
+# #s.traject(wi$li, factor(rep(1:8, rep(8, 8))))
+# par(mfrow = c(1, 1))
+# pairs(wi$li, pch = 16, cex = 1, col = sample_fac$stim)
+# abline(h = 0, v = 0)
+
+```
+
+do the same for double coexpression
+
+```{r,echo=FALSE}
+
+burt_double <- 
+sapply(1:6, function(i) sapply((i+1):7, function(j) as.numeric(burt[, i] == 2 & burt[, j] == 2)+1))
+burt_double <- do.call(cbind, burt_double)
+
+marker_mtx <-
+  lapply(1:8, function(d) {
+    do.call(rbind, 
+            lapply(1:8, function(s) {
+              #d=3
+              #s=2
+              t(sapply(1:21, function(i) {
+                #i=19
+                tmp <- by(donor_coords_raw[sample_fac$donor == d & sample_fac$stim == s, ], burt_double[, i], sum)
+                if (length(tmp) == 2) {tmp[2]} else {0}
+              }
+              )
+              )
+            }
+            )
+    )
+  }
+  )
+marker_mtx <- do.call(rbind, marker_mtx)
+
+# pairs(marker_mtx, pch = 16, cex = 1, col = sample_fac$stim)
+
+marker_mtx_scale <- cbind(marker_mtx1, marker_mtx)
+rownames(marker_mtx_scale) <- paste(sample_fac$donor, sample_fac$stim, sep = '_')
+colnames(marker_mtx_scale) <- c(markers[-8], unlist(sapply(1:6, function(i) sapply((i+1):7, function(j) paste(markers[i], markers[j], sep = '_')))))
+marker_mtx_scale <- marker_mtx_scale[, colSums(marker_mtx_scale) > 0]
+
+#marker_mtx_scale <- replace_zero(marker_mtx_scale)
+#gm <- apply(marker_mtx_scale, 1, function(x) exp(mean(log(x))))
+#marker_mtx_scale <- sweep(marker_mtx_scale, 1, gm, '/')
+marker_mtx_scale <- scale(sqrt(marker_mtx_scale))
+L <- svd(marker_mtx_scale)
+pheatmap(marker_mtx_scale)
+
+marker_mtx_centre <- marker_mtx_scale
+marker_mtx_centre <- lapply(1:8, function(i) {
+tmp <- marker_mtx_centre[sample_fac$donor == i, ]
+tmp <- sweep(tmp, 2, colMeans(tmp), '-')
+}
+)
+marker_mtx_centre <- do.call(rbind, marker_mtx_centre)
+pheatmap(marker_mtx_centre[order(sample_fac$stim), ], cluster_rows = FALSE)
+
+
+plot(L$u, pch = 16, col= sample_fac$stim)
+abline(h = 0, v = 0)
+
+plot(L$u, pch = 16, col= sample_fac$donor)
+abline(h = 0, v = 0)
+
+library(ade4)
+pca1 <- dudi.pca(marker_mtx_scale, scan = FALSE, nf = 4)
+wi <- wca(pca1, factor(rep(1:8, rep(8, 8))), scannf = FALSE, nf = 3)
+#s.traject(wi$li, factor(rep(1:8, rep(8, 8))))
+par(mfrow = c(1, 2))
+plot(L$u, pch = 16, col= sample_fac$stim)
+abline(h = 0, v = 0)
+plot(wi$li[, 1:2], pch = 16, cex = 1, col = sample_fac$stim)
+abline(h = 0, v = 0)
+
+
+#plot(3:100, log(choose(3:100, 2), 10), pch = 16, cex = 0.2)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

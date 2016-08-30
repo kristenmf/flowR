@@ -1,0 +1,844 @@
+---
+title: "Stimulation"
+author: "Kristen Feher"
+date: "27 Apr 2016"
+output: html_document
+---
+
+First load your data and supply a vector of sample names. 
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+library(cluster)
+library(ggplot2)
+library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+devtools::load_all(".")
+# load('~/2015/2015-10-30_CompareDonors/data/comp_mtx.RData')
+# load('~/2015/2015-10-30_CompareDonors/data/exprs_all_lin_no_offset.RData')
+# sample_names <- c('K1', 'K2', 'M1', 'M2', 'T1', 'T2', paste('HD', 1:4, sep = ''), paste('K', 1:17 + 2, sep = ''), paste('M', 1:8 + 2, sep = ''), paste('T', 1:21 + 2, sep = ''))
+# sample_names1 <- c('BM', 'BM', 'S', 'S', 'T', 'T', rep('PB', 4), rep('BM', 17), rep('S', 8), rep('T', 21))
+# 
+
+# sample_names <- sample_names[-c(11, 21, 28)]
+# sample_names1 <- sample_names1[-c(11, 21, 28)]
+
+fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/')
+Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
+metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
+
+markers <- c('IL10', 'IL22', 'GM-CSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
+
+C <- factor(rep(1:10, 8))
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c("b-LP505 525_50-B-A", "b-LP650 675_20-A-A", "r-670_30-C-A", "v-LP555 575_15-B-A", "v-LP600 610_20-A-A", "yg-585_15-E-A", "yg-LP600 610_20-D-A", "yg-LP750 780_60-A-A"), lgcl)
+D_comp <- mapply(function(x) compensate(x, description(x)$`$SPILLOVER`), Data, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) exprs(transform(x, L)), D_comp, SIMPLIFY = FALSE)
+
+
+# df_cd154 <- sapply(1:8, function(i) sapply(1:2, function(j) sapply(1:5, function(k) {
+#   cbind(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == levels(metadata$X2)[j] & metadata$X3 == levels(metadata$X3)[k]][[1]][, 14], i, k + 5 * (j-1))
+# }
+# )
+# )
+# )
+# df_cd154 <- do.call(rbind, df_cd154)
+# colnames(df_cd154) <- c('cd154', 'donor', 'stim')
+# df_cd154 <- as.data.frame(df_cd154)
+# df_cd154$donor <- factor(df_cd154$donor)
+# df_cd154$stim <- factor(df_cd154$stim)
+# 
+# 
+# for (i in c(1, 3:10)){
+#   fn <- paste('cd154_', i, '.pdf', sep = '')
+# pdf(fn)
+# print(
+# ggplot(df_cd154[df_cd154$stim == as.character(i) | df_cd154$stim == '2', ], aes(cd154, colour = stim, fill = stim)) + geom_density(alpha = 0.1) + facet_wrap(~donor)
+# )
+# dev.off()
+# }
+
+Data <- mapply(exprs, Data)
+
+q <- lapply(1:8, function(i) quantile(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == '1' & metadata$X3 == '2'][[1]][, 14], 0.95))
+i = 1
+D_comp_cd154 <- lapply(1:8, function(i) {
+tmp <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp <- mapply(function(x) x[x[, 14] > q[i], ], tmp, SIMPLIFY = FALSE)
+return(tmp)
+}
+)
+D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
+
+Data_cd154 <- lapply(1:8, function(i) {
+tmp <- Data[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp1 <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+tmp <- mapply(function(x, y) x[y[, 14] > q[i], ], tmp, tmp1, SIMPLIFY = FALSE)
+return(tmp)
+}
+)
+Data_cd154 <- unlist(Data_cd154, recursive = FALSE)
+
+
+
+
+
+set.seed(42)
+D_s <- sample_data(Data_cd154, D_comp_cd154, 1000)
+
+sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
+stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
+
+
+```
+
+
+```{r,echo=FALSE}
+D1 <- D_s$D - min(D_s$D) + 1
+
+D_transform <- D1[, markers_index][, -c(4, 6)]
+D_transform <- t(apply(D_transform, 1, function(x) x/sum(x)))
+D_transform <- logratio_data(D_transform)
+
+
+D_transform <- svd(D_transform)$u
+
+
+
+```
+
+```{r,echo=FALSE}
+model <- make_bins(D_transform, D_s$sample_fac, 4, 15)
+donor_coords <- get_xtab(model, 1, rep(1:8, 8))
+donor_coords_raw <- donor_coords
+#donor_coords <- model$xtab
+donor_coords[donor_coords == 0] <- min(donor_coords[donor_coords > 0]) / 10
+donor_coords <- logratio_data(donor_coords)
+
+data_bins <- get_bins_lineplot(model, w = 1, D_s$D_comp, sample_fac = D_s$sample_fac)
+data_bins_median <- mapply(function(x) apply(x, 2, median), data_bins[[1]])
+data_bins_median <- data_bins_median[markers_index, ]
+rownames(data_bins_median) <- markers
+
+
+
+```
+
+
+samples coloured according to stimulation
+
+```{r, echo=FALSE}
+
+#model <- make_bins(D_transform, D$sample_fac, 4, 14)
+#donor_coords <- get_xtab(model, 0.5, sample_names1)
+#donor_coords <- replace_zero(donor_coords)
+#donor_coords <- logratio_data(donor_coords)
+
+L <- svd(donor_coords)
+bp <- make_biplot(L, 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+text(bp$F, labels = rep(1:8, 8), col = rep(1:8, 8))
+# dev.off()
+```
+
+samples coloured according to donor. The donors aren't equally spread over the space but rather have preferential locations. 
+
+```{r, echo=FALSE}
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+text(bp$F, labels = rep(1:8, rep(8, 8)), col = rep(1:8, rep(8, 8)))
+
+
+CA <- ca(donor_coords_raw)
+
+par(mfrow = c(1, 2))
+plot(CA$rowcoord, type = 'n', main = 'stim')
+text(CA$rowcoord, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(CA$rowcoord,pch = 16, cex = 2, col = sample_fac$donor, main = 'donor')
+
+plot(CA$colcoord, pch = 16, cex = 0.5)
+
+```
+
+
+
+
+
+
+
+```{r,echo=FALSE}
+
+# x <- lapply(1:5, function(i) apply(donor_coords_raw, 1, function(x) sum(x[burt[, i] == 2])/sum(x[rowSums(burt) > 5])))
+# y <- lapply(1:5, function(i) apply(donor_coords_raw, 1, function(x) sum(x[burt[, i] == 2 & rowSums(burt) == 6])/sum(x[rowSums(burt) > 5])))
+# 
+# 
+# H <- mapply(function(x, y) y/x, x, y)
+# pheatmap(cor(H))
+# 
+# cormtx <- cor(data.frame(x))
+# rownames(cormtx) <- colnames(burt)
+# colnames(cormtx) <- colnames(burt)
+# pheatmap(cormtx)
+# 
+# pairs(x, col = sample_fac$stim, pch = 16, panel = function(x,y,...) {
+#   points(x, y, type = 'n')
+#   text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+#   abline(a=1, b=-1)
+#   }
+#   )
+# 
+# pairs(mapply(function(x, y) y/x, x, y), col = sample_fac$stim, pch = 16, panel = function(x,y,...) {
+#   points(x, y, type = 'n')
+#   text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+#   abline(a=1, b=-1)
+#   }
+#   )
+# 
+# pdf('single_total_positive.pdf')
+# par(mfrow = c(2, 3))
+# for (i in 1:5) {
+# plot(sqrt(x[[i]]), sqrt(y[[i]]), type = 'n', col = sample_fac$stim, pch = 16, xlab = 'sqrt(total positive)', ylab = 'sqrt(single positive)', main = colnames(burt)[i])
+# text(sqrt(x[[i]]), sqrt(y[[i]]), labels = stim[sample_fac$stim], col = sample_fac$stim)
+# abline(a = 0, b = 1)
+# }
+# dev.off()
+# 
+# par(mfrow = c(2, 3))
+# for (i in 1:5) {
+# plot(x[[i]], y[[i]]/x[[i]], type = 'n', col = sample_fac$stim, pch = 16, xlab = 'sqrt(total positive)', ylab = 'sqrt(single positive)', main = colnames(burt)[i])
+# text(x[[i]], y[[i]]/x[[i]], labels = stim[sample_fac$stim], col = sample_fac$stim)
+# abline(h = 1)
+# }
+# 
+# 
+# 
+# par(mfrow = c(1, 1))
+# A = 4
+# B = 5
+# plot(sqrt(c(x[[A]], x[[B]])), sqrt(c(y[[A]], y[[B]])), pch = 16, cex = 0.5, col = sample_fac$stim)
+# arrows(sqrt(x[[A]]), y[[A]]^0.5, x[[B]]^0.5, y[[B]]^0.5, length = 0.05, col = sample_fac$stim)
+# abline(a = 0, b = 1)
+# 
+# K = 5
+# x <- apply(donor_coords_raw, 1, function(x) sum(x[burt[, K] == 2])/sum(x[rowSums(burt) == 5])) # total producer normalised to total stained
+# y <- lapply((1:5)[-K], function(i) apply(
+#   donor_coords_raw, 
+#   1, 
+#   function(x) {
+#     pa <- sum(x[burt[, K] == 2])/sum(x[rowSums(burt) == 5])
+#     pb <- sum(x[burt[, i] == 2])/sum(x[rowSums(burt) == 5])
+#     papb <- pa * pb
+#     pab <- sum(x[burt[, K] == 2 & burt[, i] == 2])/sum(x[rowSums(burt) == 5])
+#     if (pab > 0) {pab/papb} else {0}
+#     }
+#   )
+#   )
+# y <- mapply(function(x) {x[x == 0] <- 1; return(x)}, y, SIMPLIFY = FALSE)
+# 
+# y1 <- lapply((1:5)[-K], function(i) apply(
+#   donor_coords_raw, 
+#   1, 
+#   function(x) {
+#     pab <- sum(x[burt[, K] == 2 & burt[, i] == 2])/sum(x[rowSums(burt) == 5])
+#     return(pab)
+#     }
+#   )
+#   )
+# y1 <- mapply(function(x) {x[x == 0] <- 1; return(x)}, y1, SIMPLIFY = FALSE)
+# 
+# 
+# 
+# par(mfrow = c(2, 2))
+# for (i in 1:4) { 
+#   plot(x, log(y1[[i]], 2), pch = 16, cex = 1, col = sample_fac$stim, main = colnames(burt[(1:5)[-K]][i]))
+#   abline(h = c(0, 1))
+# }
+# 
+# y <- lapply(1:4, function(i) lapply((i+1):5, function(K) { apply(
+#   donor_coords_raw, 
+#   1, 
+#   function(x) {
+#     pab <- sum(x[burt[, K] == 2 & burt[, i] == 2])/sum(x[rowSums(burt) == 5])
+#     return(pab)
+#     }
+#   )
+#   
+#   }
+#   )
+# )
+# y <- unlist(y, recursive = FALSE)
+# #y <- mapply(function(x) {x[x == 0] <- 1; return(x)}, y, SIMPLIFY = FALSE)
+# #y <- mapply(log, y, 2, SIMPLIFY = FALSE)
+# 
+# x <- lapply(1:5, function(K) apply(donor_coords_raw, 1, function(x) sum(x[burt[, K] == 2])/sum(x[rowSums(burt) == 5]))) # total producer 
+# 
+# pairs(y, col = sample_fac$stim, pch = 16, cex = 0.5)
+# K = 5
+# par(mfrow = c(3, 4))
+# for (i in 1:10) {
+# plot(x[[K]]^0.5, y[[i]]^0.5, pch = 16, col = sample_fac$stim)  
+# }
+# 
+# 
+# Q <- data.frame(x = I(data.frame(x)), y = I(data.frame(y)))
+# colnames(Q$x) <- colnames(burt)
+# colnames(Q$y) <- unlist(sapply(1:4, function(i) sapply((i+1):5, function(j) paste(colnames(burt)[i], colnames(burt)[j], sep = '_'))))
+# 
+# pheatmap(scale(t(as.matrix(Q$x))) %*% scale(as.matrix(Q$y)))
+# 
+# par(mfrow = c(1, 2))
+# plot(Q$x$IFNg, log(Q$y$IL10_IL22), pch = 16, col = sample_fac$stim)
+# plot(Q$x$IFNg, log(Q$y$IL22_IL17), pch = 16, col = sample_fac$stim)
+# 
+# unst <- 1 - apply(donor_coords_raw, 1, function(x) sum(x[rowSums(burt) == 5]))
+# par(mfrow = c(2, 3))
+# for (i in 1:5)
+#   plot( unst, Q$x[, i]/unst, pch = 16, col = sample_fac$stim, main = colnames(burt)[i])
+# plot(rowSums(Q$x), unst, col = sample_fac$stim, pch = 16)
+# abline(a = 1, b = -1)
+# ```
+# 
+# 
+# ```{r,echo=FALSE}
+# K = 5
+# x <- apply(donor_coords_raw, 1, function(x) sum(x[burt[, K] == 2 & rowSums(burt) == 6])/sum(x[burt[, K] == 2])) # proportion of single positive amongst total producers
+# y <- lapply((1:5)[-K], function(i) { apply( # proportion of coexp amongts total producers
+#   donor_coords_raw, 
+#   1, 
+#   function(x) {
+#     pab <- sum(x[burt[, K] == 2 & burt[, i] == 2])/sum(x[burt[, K] == 2])
+#     return(pab)
+#     }
+#   )
+#   
+#   }
+#   )
+# par(mfrow = c(2, 2))
+# for (i in 1:4) {
+#   plot(x, y[[i]], col = sample_fac$stim, pch = 16, main = colnames(burt)[(1:5)[-K]][i])
+#   abline(a = 1, b = -1)
+#   }
+# 
+# par(mfrow = c(1, 1))
+# plot(x, rowSums(do.call(cbind, y)), col = sample_fac$stim, pch = 16)
+# abline(a = 1, b = -1)
+
+```
+
+First check MCA of all markers (unweighted with respect to frequency within each bin, just on the relative number of bins). IL4 and IL5 dominate due to the low number of bins that contain them. 
+
+```{r,echo=FALSE}
+library(ca)
+bins <- t(data_bins_median)[, -8]
+
+make_burt <- function(X) {
+burt <- apply(X, 2, cut, 2, FALSE, TRUE)
+burt <- as.data.frame(burt)
+return(burt)
+}
+
+# top level
+
+burt <- make_burt(bins)
+MJ <- mjca(burt, lambda = 'JCA')
+par(mfrow = c(1, 1))
+plot(MJ$colpcoord[seq(2, 14, 2), 1:2], pch = 16, type = 'n')
+text(MJ$colpcoord[seq(2, 14, 2), 1:2], labels = colnames(burt))
+arrows(MJ$colpcoord[seq(1, 14, 2), 1], MJ$colpcoord[seq(1, 14, 2), 2], MJ$colpcoord[seq(2, 14, 2), 1], MJ$colpcoord[seq(2, 14, 2), 2])
+```
+
+Omit IL4 and IL5. Now make an individual MCA for each treatment (this time weighted for average frequency within each bin). 
+
+```{r,echo=FALSE}
+burt <- burt[, -c(4, 6)]
+
+make_ind <- function(x) {tmp <- c(0, 0); tmp[x] <- 1; return(tmp)}
+make_ind_row <- function(x) {unlist(mapply(make_ind, x, SIMPLIFY = FALSE))}
+burt_ind <- t(apply(burt, 1, make_ind_row))
+
+plot(ca(burt_ind))
+
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+
+for (i in 1:8) {
+tmp_B <- sweep(burt_ind, 1, W[[i]], '*')
+tmp_B <- tmp_B[rowSums(tmp_B) > 0, ]
+plot(ca(tmp_B), main = stim[[i]])
+}
+
+```
+
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive, at least 5 times positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. Nothing is positive for 5 markers. 
+
+```{r,echo=FALSE}
+
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[x == 2])/sum(donor_coords_raw))
+
+
+
+#at least double positive (total)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 8 & x == 2])/sum(donor_coords_raw))
+
+# at least triple positive
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 9 & x == 2])/sum(donor_coords_raw))
+
+# at least quadruple positive (almost nothing)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 10 & x == 2])/sum(donor_coords_raw))
+
+
+
+```
+
+make coexpression heatmap, combined over all stimulations
+
+```{r,echo=FALSE}
+replace_zero <- 
+function(X) {
+  X[X == 0] <- min(X[X > 0])/2
+  #X <- t(apply(X, 1, function(x) x/sum(x)))
+  return(X)
+}
+
+make_tab_double_counts <- function(burt, W) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+       pab <- sum(W[burt[, i] == 2 & burt[, j] == 2])
+      return(pab)
+    }
+    )
+  }
+  )
+  rownames(tab_double) <- colnames(burt)
+  colnames(tab_double) <- colnames(burt)
+  return(tab_double)
+  }
+
+
+
+# scaling the matrix downweights the coexpression according to how many are positive for both markers individually
+make_tab_double_weighted <- function(burt, W) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+      #i = 1
+      #j = 4
+      #W <- colSums(donor_coords_raw)
+      pa <- sum(W[burt[, i] == 2])/sum(W)
+      pb <- sum(W[burt[, j] == 2])/sum(W)
+      pab <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+      if (pa == 0 | pb == 0) {return(0)} else {return(pab/(pa*pb))}
+#       a <- sum(W[burt[, i] == 2])/sum(W)
+#       if (sum(W[burt[, j] == 2]) > 0) {
+#         b <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W[burt[, j] == 2])
+#       } else {b <- 0}
+      #a <- length(which(burt[, i] == 2))/nrow(burt) # proportion positive for i
+      #b <- length(which(burt[, i] == 2 & burt[, j] == 2))/length(which(burt[, j] == 2)) # proportion double positive, normalised to proportion positive for j
+      # if (a > 0) {b/a} else {0}
+    }
+    )
+  }
+  )
+  rownames(tab_double)<- colnames(burt)
+  colnames(tab_double)<- colnames(burt)
+  # tab_double <- tab_double[c(1, 4, 6, 5, 3, 2, 7), c(1, 4, 6, 5, 3, 2, 7)]
+  w <- which(diag(tab_double) == 0)
+  if (length(w) > 0) {tab_double <- tab_double[-w, -w]}
+  w <- which(tab_double == 0)
+  tab_double[w] <- 1
+  tab_double <- log(tab_double)
+  # pheatmap(tab_double)
+  # linear
+  # plot(log(apply(burt, 2, table)[2, ]), log(diag(tab_double)), pch = 16)
+  d <- diag(tab_double)
+  tab_double_scaled <- sweep(tab_double, 1, sqrt(d), '/')
+  tab_double_scaled <- sweep(tab_double_scaled, 2, sqrt(d), '/')
+  return(list(tab_raw = tab_double, tab_scaled = tab_double_scaled))
+}
+
+make_tab_coexp <- function(burt, W) {
+  sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+     sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+    }
+    )
+  }
+  )
+  }
+
+
+
+
+```
+
+
+
+
+check frequencies of each marker in each stimulation as a proportion of total
+
+```{r,echo=FALSE}
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+
+cs <- colSums(donor_coords_raw)
+expr_mtx <- sapply(1:ncol(burt), function(j) sapply(1:length(W), function(i) (sum(W[[i]][burt[, j] == 2])/sum(W[[i]]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+colnames(expr_mtx) <- colnames(burt)
+rownames(expr_mtx) <- stim
+expr_mtx[expr_mtx == 0] <- 1
+pheatmap(log(expr_mtx))
+
+expr_mtx_all <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2])/sum(donor_coords_raw[i, ]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+expr_mtx_all[expr_mtx_all == 0] <- 1
+#pheatmap(log(expr_mtx_all)[order(sample_fac$stim), ], cluster_rows = FALSE)
+
+expr_mtx_all1 <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2])/sum(donor_coords_raw[i, ]))))
+expr_mtx_all1[expr_mtx_all1 == 0] <- 1
+
+```
+
+Repeat for all individual samples, and plot the SVD of this matrix. Colour-coded according to donor, and to stimulation. Already, the number of relative number of positive cells in a sample (with respect to total over all samples) is already a fingerprint of the stimulations. Next question is to understand how the markers interact. 
+
+```{r,echo=FALSE}
+
+par(mfrow = c(1, 2))
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$donor, main = 'donor')
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$stim, main = 'stimulation')
+
+```
+
+Center the donors, and plot the 1st and 2nd, and 1st and 3rd components. IL10 and GMCSF have a role in separating beyond the 'basic' separation by IL17, IL22, IFNg?
+
+
+```{r,echo=FALSE}
+
+L <- log(expr_mtx_all)
+RM <- do.call(rbind, replicate(8,  by(L, sample_fac$donor, colMeans)))
+L <- L - RM
+
+bp <- make_biplot(svd(L), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = colnames(burt))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+par(mfrow = c(1, 2))
+plot(bp$F[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 3]*2, lwd = 2, length = 0.1)
+text(bp$F[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G[, c(1, 3)]*2.5,  type = 'n')
+text(bp$G[, c(1, 3)]*2, labels = colnames(burt))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 3]*1.5, lwd = 2)
+
+
+
+```
+
+
+make coexpression heatmaps for all stimulations combined (scaled and raw)
+
+```{r,echo=FALSE}
+tab_all <- make_tab_double_weighted(burt, colSums(donor_coords_raw))
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+tab_double_w <- mapply(function(x) make_tab_double_weighted(burt, x), W, SIMPLIFY = FALSE)
+
+tab_counts <- mapply(function(x) make_tab_double_counts(burt, x), W, SIMPLIFY = FALSE)
+
+pheatmap(tab_all$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE, main = 'scaled' , breaks = seq(-1.01, 1.01, length.out = 21), color = colorRampPalette(c('blue', 'grey', 'red'), bias = 1)(20))
+
+```
+
+and then make coexpression heatmaps for each stimulation. 
+
+```{r,echo=FALSE}
+for (i in 1:8) 
+  pheatmap(tab_double_w[[i]]$tab_scaled, cluster_rows = FALSE, cluster_cols = FALSE, main = stim[i], breaks = seq(-1.01, 1.01, length.out = 21), color = colorRampPalette(c('blue', 'grey', 'red'), bias = 1)(20))
+```
+
+
+
+
+```{r,echo=FALSE}
+fac <- interaction(burt[, 4], burt[, 5])
+counts <- t(apply(donor_coords_raw, 1, function(x) by(x, fac, sum)))
+# pairs(cbind(counts[, 1] + counts[, 3], counts[, c(2, 4)]), col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+#   points(x, y, type = 'n')
+#   text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+#   abline(a=1, b=-1)
+# })
+
+pairs(counts, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+
+subcomp <- counts[, -1]
+subcomp <- t(apply(subcomp, 1, function(x) x/sum(x)))
+pairs(subcomp, col = rep(1:8, 8), pch = 16, panel = function(x,y,...) {
+  points(x, y, type = 'n')
+  text(x, y, labels = as.character(1:8, 8), col = rep(1:8, 8))
+  abline(a=1, b=-1)
+})
+
+```
+
+IFNg+IL17- and IFNgIL17 double negative are in a strong equilibrium, that is almost linear. As the proportion of double neg increases, there becomes slightly less IFNg+IL17- than expected, and the 'missing' cells are shared out between IFNg-IL17+ and IFNg+IL17+. Candida and Cleptum have more IFNg-IL17+. Ecoli has more IFNg+IL17+. 
+
+
+
+here is a plot of 1.2, 2.1, 2.2 as a proportion of cells that are not double negative. The more double negative cells there are, the larger the proportion of non-double negatives are IL17+
+
+```{r,echo=FALSE}
+  par(mfrow = c(1, 3))
+  plot(counts[, 1], counts[, 2]/(1-counts[, 1]), type = 'n', main = 'IFNg+IL17-', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 2]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+  plot(counts[, 1], counts[, 3]/(1-counts[, 1]), type = 'n', main = 'IFNg-IL17+', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 3]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+  plot(counts[, 1], counts[, 4]/(1-counts[, 1]), type = 'n', main = 'IFNg+IL17+', xlab = 'proportion double neg', ylab = 'normalised proportion')
+  text(counts[, 1], counts[, 4]/(1-counts[, 1]), labels = as.character(1:8, 8), col = rep(1:8, 8))
+
+
+```
+
+
+
+
+
+This is a plot of the total producer of each marker vs. number of unstained (normalised to total number of cells)
+
+```{r,echo=FALSE}
+
+totalproducer <- 
+  do.call(rbind, 
+  lapply(1:5, function(J) {
+  do.call(rbind, 
+  lapply(1:nrow(donor_coords_raw), function(K) {
+a1 <- sum(donor_coords_raw[K, burt[, J] == 2])
+a2 <- sum(donor_coords_raw[K, rowSums(burt) == 5])
+data.frame(unst = a2, total = a1, marker = colnames(burt)[J], stim = sample_fac$stim[K])
+}
+)
+)
+}
+)
+)
+
+ggplot(totalproducer, aes(unst, total)) + geom_point(aes(colour = factor(stim))) + facet_wrap(~ marker)
+
+```
+
+This the number of total producers, normalised to (1 - unstained), vs. the proportion of unstained cells 
+
+```{r,echo=FALSE}
+totalproducer_norm <- 
+  do.call(rbind, 
+  lapply(1:5, function(J) {
+  do.call(rbind, 
+  lapply(1:nrow(donor_coords_raw), function(K) {
+    a2 <- sum(donor_coords_raw[K, rowSums(burt) == 5])
+a1 <- sum(donor_coords_raw[K, burt[, J] == 2])/(1 - a2)
+data.frame(unst = a2, total = a1, marker = colnames(burt)[J], stim = sample_fac$stim[K])
+}
+)
+)
+}
+)
+)
+
+
+ggplot(totalproducer_norm, aes(unst, total)) + geom_point(aes(colour = factor(stim))) + facet_wrap(~marker)
+
+```
+
+This is a plot of single positives vs. total producers of each marker, both normalised to (1 - unstained). 
+
+```{r,echo=FALSE}
+
+singleproducer_norm <- 
+  do.call(rbind, 
+  lapply(1:5, function(J) {
+  do.call(rbind, 
+  lapply(1:nrow(donor_coords_raw), function(K) {
+    a2 <- sum(donor_coords_raw[K, rowSums(burt) == 5])
+a1 <- sum(donor_coords_raw[K, burt[, J] == 2])/(1 - a2)
+a3 <- sum(donor_coords_raw[K, burt[, J] == 2 & rowSums(burt) ==  6])/(1 - a2)
+data.frame(single = a3, total = a1, marker = colnames(burt)[J], stim = sample_fac$stim[K])
+}
+)
+)
+}
+)
+)
+
+ggplot(singleproducer_norm, aes(total, single)) + geom_point(aes(colour = factor(stim))) + facet_wrap(~ marker) + geom_abline(aes(slope = 1, intercept = 0))
+
+```
+
+This is the number of coexpressed cells vs. number of producers for each marker, both normalised to (1 - unstained). 
+
+```{r,echo=FALSE}
+coexpr <- 
+  lapply(1:5, function(J) {
+  do.call(rbind, 
+  lapply(1:nrow(donor_coords_raw), function(K) {
+    a2 <- sum(donor_coords_raw[K, rowSums(burt) == 5])
+a1 <- sum(donor_coords_raw[K, burt[, J] == 2])/(1 - a2)
+a3 <- unlist(lapply((1:5)[-J], function(I) sum(donor_coords_raw[K, burt[, J] == 2 & burt[, I] == 2])/(1 - a2)))
+m <- unlist(lapply((1:5)[-J], function(I) paste(colnames(burt)[J], colnames(burt)[I], sep = '_')))
+data.frame(coexp = a3, total = a1, marker = m, stim = sample_fac$stim[K])
+}
+)
+)
+}
+)
+
+for (i in 1:5) {
+print(ggplot(coexpr[[i]], aes(total, coexp)) + geom_point(aes(colour = factor(stim))) + facet_wrap(~ marker) + ggtitle(colnames(burt)[i]))
+}
+
+```
+
+This is log ratio of over/under-representation of coexpressed cells, vs. number of producers (normalised to (1 - unstained)). 
+
+```{r,echo=FALSE}
+coexpr_norm <- 
+  lapply(1:5, function(J) {
+  do.call(rbind, 
+  lapply(1:nrow(donor_coords_raw), function(K) {
+    a2 <- sum(donor_coords_raw[K, rowSums(burt) == 5])
+a1 <- sum(donor_coords_raw[K, burt[, J] == 2])/(1 - a2)
+a3 <- unlist(lapply((1:5)[-J], function(I) {
+  tmp <- (sum(donor_coords_raw[K, burt[, J] == 2 & burt[, I] == 2])/(1 - a2))/((sum(donor_coords_raw[K, burt[, J] == 2])/(1 - a2)) * (sum(donor_coords_raw[K, burt[, I] == 2])/(1 - a2)))
+  if (is.nan(tmp)) {return(0)} else {return(log(tmp, 2))}
+}
+)
+)
+m <- unlist(lapply((1:5)[-J], function(I) paste(colnames(burt)[J], colnames(burt)[I], sep = '_')))
+data.frame(coexp = a3, total = a1, marker = m, stim = sample_fac$stim[K])
+}
+)
+)
+}
+)
+
+for (i in 1:5) {
+print(ggplot(coexpr_norm[[i]], aes(total, coexp)) + geom_point(aes(colour = factor(stim))) + facet_wrap(~ marker) + ggtitle(colnames(burt)[i]))
+}
+
+
+
+```
+
+Look at correlation of frequencies in at least single positive and at least double positive
+
+```{r,echo=FALSE}
+
+
+d1 <- sapply(1:5, function(i) sapply(1:nrow(donor_coords_raw), function(K) sum(donor_coords_raw[K, burt[, i] == 2])))
+colnames(d1) <- colnames(burt)
+d2 <- sapply(1:4, function(j) sapply((j+1):5, function(i) sapply(1:nrow(donor_coords_raw), function(K) sum(donor_coords_raw[K, burt[, i] == 2 & burt[, j] == 2]))))
+d2 <- do.call(cbind, d2)
+colnames(d2) <- unlist(sapply(1:4, function(j) sapply((j+1):5, function(i) paste(colnames(burt)[i], colnames(burt)[j], sep = '_'))))
+
+d <- cbind(d1, d2)
+rownames(d) <- stim[sample_fac$stim]
+d <- cbind(d, sapply(1:nrow(donor_coords_raw), function(K) sum(donor_coords_raw[K, rowSums(burt) == 5])))
+pheatmap(scale(d)[order(sample_fac$stim), ], cluster_rows = FALSE )
+colnames(d)[16] <- 'unst'
+pheatmap(cor(d))
+
+#plot(ca(d))
+
+Ca <- ca(d2)
+
+par(mfrow = c(1, 2))
+plot(Ca$rowcoord[, c(1, 2)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = sample_fac$stim, pch = 16)
+arrows(0, 0, Ca$colcoord[, 1]*1, Ca$colcoord[, 2]*1, lwd = 1, length = 0.1)
+text(Ca$rowcoord[, c(1, 2)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(Ca$colcoord[, c(1, 2)]*3.5,  type = 'n')
+text(Ca$colcoord[, c(1, 2)]*2.5, labels = colnames(d2))
+arrows(0, 0, Ca$colcoord[, 1]*1.5, Ca$colcoord[, 2]*1.5, lwd = 2, length = 0.1)
+
+par(mfrow = c(1, 2))
+plot(Ca$rowcoord[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = sample_fac$stim, pch = 16)
+arrows(0, 0, Ca$colcoord[, 1]*1, Ca$colcoord[, 3]*1, lwd = 1, length = 0.1)
+text(Ca$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(Ca$colcoord[, c(1, 3)]*3.5,  type = 'n')
+text(Ca$colcoord[, c(1, 3)]*2.5, labels = colnames(d2))
+arrows(0, 0, Ca$colcoord[, 1]*1.5, Ca$colcoord[, 3]*1.5, lwd = 2, length = 0.1)
+
+
+
+
+```
+
+Look at correlation of over/underrepresentation of coexpression
+
+
+
+```{r,echo=FALSE}
+
+d1 <- t(
+  sapply(1:nrow(donor_coords_raw) , function(K) {
+  unlist(sapply(1:4, function(i) sapply((i+1):5, function(j) {
+  pa <- sum(donor_coords_raw[K, burt[, i] == 2])
+  pb <- sum(donor_coords_raw[K, burt[, j] == 2])
+  papb <- sum(donor_coords_raw[K, burt[, i] == 2 & burt[, j] == 2])
+  if (pa == 0 | pb == 0 | papb == 0) {return(0)} else {return(papb/(pa*pb))}
+  }
+  )
+  )
+  )
+  }
+  )
+  )
+colnames(d1) <- unlist(sapply(1:4, function(j) sapply((j+1):5, function(i) paste(colnames(burt)[i], colnames(burt)[j], sep = '_'))))
+rownames(d1) <- stim[sample_fac$stim]
+
+
+pheatmap(scale(d1)[order(sample_fac$stim), ], cluster_rows = FALSE )
+
+pheatmap(scale(t(scale(t(d1))))[order(sample_fac$stim), ], cluster_rows = TRUE)
+pheatmap(cor(t(scale(t(d1)))))
+
+pheatmap(cor(d1))
+
+Ca <- ca(d1)
+
+par(mfrow = c(1, 2))
+plot(Ca$rowcoord[, c(1, 2)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = sample_fac$stim, pch = 16)
+arrows(0, 0, Ca$colcoord[, 1]*1, Ca$colcoord[, 2]*1, lwd = 1, length = 0.1)
+text(Ca$rowcoord[, c(1, 2)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(Ca$colcoord[, c(1, 2)]*3.5,  type = 'n')
+text(Ca$colcoord[, c(1, 2)]*2.5, labels = colnames(d1))
+arrows(0, 0, Ca$colcoord[, 1]*1.5, Ca$colcoord[, 2]*1.5, lwd = 2, length = 0.1)
+
+par(mfrow = c(1, 2))
+plot(Ca$rowcoord[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = sample_fac$stim, pch = 16)
+arrows(0, 0, Ca$colcoord[, 1]*1, Ca$colcoord[, 3]*1, lwd = 1, length = 0.1)
+text(Ca$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(Ca$colcoord[, c(1, 3)]*3.5,  type = 'n')
+text(Ca$colcoord[, c(1, 3)]*2.5, labels = colnames(d1))
+arrows(0, 0, Ca$colcoord[, 1]*1.5, Ca$colcoord[, 3]*1.5, lwd = 2, length = 0.1)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

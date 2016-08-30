@@ -1,0 +1,766 @@
+---
+title: "Stimulation"
+author: "Kristen Feher"
+date: "27 Apr 2016"
+output: html_document
+---
+  
+  First load your data and supply a vector of sample names. 
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+library(cluster)
+library(ggplot2)
+library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+library(igraph)
+library(glasso)
+devtools::load_all(".")
+# load('~/2015/2015-10-30_CompareDonors/data/comp_mtx.RData')
+# load('~/2015/2015-10-30_CompareDonors/data/exprs_all_lin_no_offset.RData')
+# sample_names <- c('K1', 'K2', 'M1', 'M2', 'T1', 'T2', paste('HD', 1:4, sep = ''), paste('K', 1:17 + 2, sep = ''), paste('M', 1:8 + 2, sep = ''), paste('T', 1:21 + 2, sep = ''))
+# sample_names1 <- c('BM', 'BM', 'S', 'S', 'T', 'T', rep('PB', 4), rep('BM', 17), rep('S', 8), rep('T', 21))
+# 
+
+# sample_names <- sample_names[-c(11, 21, 28)]
+# sample_names1 <- sample_names1[-c(11, 21, 28)]
+
+fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/')
+Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
+metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
+
+markers <- c('IL10', 'IL22', 'GM-CSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
+
+C <- factor(rep(1:10, 8))
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c("b-LP505 525_50-B-A", "b-LP650 675_20-A-A", "r-670_30-C-A", "v-LP555 575_15-B-A", "v-LP600 610_20-A-A", "yg-585_15-E-A", "yg-LP600 610_20-D-A", "yg-LP750 780_60-A-A"), lgcl)
+D_comp <- mapply(function(x) compensate(x, description(x)$`$SPILLOVER`), Data, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) exprs(transform(x, L)), D_comp, SIMPLIFY = FALSE)
+
+
+# df_cd154 <- sapply(1:8, function(i) sapply(1:2, function(j) sapply(1:5, function(k) {
+#   cbind(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == levels(metadata$X2)[j] & metadata$X3 == levels(metadata$X3)[k]][[1]][, 14], i, k + 5 * (j-1))
+# }
+# )
+# )
+# )
+# df_cd154 <- do.call(rbind, df_cd154)
+# colnames(df_cd154) <- c('cd154', 'donor', 'stim')
+# df_cd154 <- as.data.frame(df_cd154)
+# df_cd154$donor <- factor(df_cd154$donor)
+# df_cd154$stim <- factor(df_cd154$stim)
+# 
+# 
+# for (i in c(1, 3:10)){
+#   fn <- paste('cd154_', i, '.pdf', sep = '')
+# pdf(fn)
+# print(
+# ggplot(df_cd154[df_cd154$stim == as.character(i) | df_cd154$stim == '2', ], aes(cd154, colour = stim, fill = stim)) + geom_density(alpha = 0.1) + facet_wrap(~donor)
+# )
+# dev.off()
+# }
+
+Data <- mapply(exprs, Data)
+
+q <- lapply(1:8, function(i) quantile(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == '1' & metadata$X3 == '2'][[1]][, 14], 0.95))
+i = 1
+D_comp_cd154 <- lapply(1:8, function(i) {
+  tmp <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+  tmp <- mapply(function(x) x[x[, 14] > q[i], ], tmp, SIMPLIFY = FALSE)
+  return(tmp)
+}
+)
+D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
+
+Data_cd154 <- lapply(1:8, function(i) {
+  tmp <- Data[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+  tmp1 <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+  tmp <- mapply(function(x, y) x[y[, 14] > q[i], ], tmp, tmp1, SIMPLIFY = FALSE)
+  return(tmp)
+}
+)
+Data_cd154 <- unlist(Data_cd154, recursive = FALSE)
+
+
+
+
+
+set.seed(42)
+D_s <- sample_data(Data_cd154, D_comp_cd154, 1000)
+
+sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
+stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
+
+
+```
+
+```{r,echo=FALSE}
+D1 <- D_s$D - min(D_s$D) + 1
+
+D_transform <- D1[, markers_index][, -c(4, 6)]
+D_transform <- t(apply(D_transform, 1, function(x) x/sum(x)))
+D_transform <- logratio_data(D_transform)
+
+
+D_transform <- svd(D_transform)$u
+
+
+
+```
+
+```{r,echo=FALSE}
+model <- make_bins(D_transform, D_s$sample_fac, 4, 15)
+donor_coords <- get_xtab(model, 1, rep(1:8, 8))
+donor_coords_raw <- donor_coords
+#donor_coords <- model$xtab
+donor_coords[donor_coords == 0] <- min(donor_coords[donor_coords > 0]) / 10
+donor_coords <- logratio_data(donor_coords)
+
+data_bins <- get_bins_lineplot(model, w = 1, D_s$D_comp, sample_fac = D_s$sample_fac)
+data_bins_median <- mapply(function(x) apply(x, 2, median), data_bins[[1]])
+data_bins_median <- data_bins_median[markers_index, ]
+rownames(data_bins_median) <- markers
+
+
+
+```
+
+
+```{r,echo=FALSE}
+library(ca)
+bins <- t(data_bins_median)[, -8]
+
+make_burt <- function(X) {
+burt <- apply(X, 2, cut, 2, FALSE, TRUE)
+burt <- as.data.frame(burt)
+return(burt)
+}
+
+# top level
+
+burt <- make_burt(bins)
+#burt <- burt[, -c(4, 6)]
+
+
+```
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive, at least 5 times positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. Nothing is positive for 5 markers. 
+
+```{r,echo=FALSE}
+
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[x == 2])/sum(donor_coords_raw))
+
+
+
+#at least double positive (total)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 8 & x == 2])/sum(donor_coords_raw))
+
+# at least triple positive
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 9 & x == 2])/sum(donor_coords_raw))
+
+# at least quadruple positive (almost nothing)
+apply(burt, 2, function(x) sum(colSums(donor_coords_raw)[rowSums(burt) > 10 & x == 2])/sum(donor_coords_raw))
+
+
+
+```
+
+
+```{r,echo=FALSE}
+replace_zero <- 
+function(X) {
+  X[X == 0] <- min(X[X > 0])/2
+  #X <- t(apply(X, 1, function(x) x/sum(x)))
+  return(X)
+}
+
+make_tab_double_counts <- function(burt, W) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+       pab <- sum(W[burt[, i] == 2 & burt[, j] == 2])
+      return(pab)
+    }
+    )
+  }
+  )
+  rownames(tab_double) <- colnames(burt)
+  colnames(tab_double) <- colnames(burt)
+  return(tab_double)
+  }
+
+
+
+# scaling the matrix downweights the coexpression according to how many are positive for both markers individually
+make_tab_double_weighted <- function(burt, W) {
+  tab_double <- sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+      #i = 1
+      #j = 4
+      #W <- colSums(donor_coords_raw)
+      pa <- sum(W[burt[, i] == 2])/sum(W)
+      pb <- sum(W[burt[, j] == 2])/sum(W)
+      pab <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+      if (pa == 0 | pb == 0) {return(0)} else {return(pab/(pa*pb))}
+#       a <- sum(W[burt[, i] == 2])/sum(W)
+#       if (sum(W[burt[, j] == 2]) > 0) {
+#         b <- sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W[burt[, j] == 2])
+#       } else {b <- 0}
+      #a <- length(which(burt[, i] == 2))/nrow(burt) # proportion positive for i
+      #b <- length(which(burt[, i] == 2 & burt[, j] == 2))/length(which(burt[, j] == 2)) # proportion double positive, normalised to proportion positive for j
+      # if (a > 0) {b/a} else {0}
+    }
+    )
+  }
+  )
+  rownames(tab_double)<- colnames(burt)
+  colnames(tab_double)<- colnames(burt)
+  # tab_double <- tab_double[c(1, 4, 6, 5, 3, 2, 7), c(1, 4, 6, 5, 3, 2, 7)]
+  w <- which(diag(tab_double) == 0)
+  if (length(w) > 0) {tab_double <- tab_double[-w, -w]}
+  w <- which(tab_double == 0)
+  tab_double[w] <- 1
+  tab_double <- log(tab_double)
+  # pheatmap(tab_double)
+  # linear
+  # plot(log(apply(burt, 2, table)[2, ]), log(diag(tab_double)), pch = 16)
+  d <- diag(tab_double)
+  tab_double_scaled <- sweep(tab_double, 1, sqrt(d), '/')
+  tab_double_scaled <- sweep(tab_double_scaled, 2, sqrt(d), '/')
+  return(list(tab_raw = tab_double, tab_scaled = tab_double_scaled))
+}
+
+make_tab_coexp <- function(burt, W) {
+  sapply(1:ncol(burt), function(j) {
+    sapply(1:ncol(burt), function(i) {
+     sum(W[burt[, i] == 2 & burt[, j] == 2])/sum(W)
+    }
+    )
+  }
+  )
+  }
+
+
+
+
+```
+
+
+
+for each marker (and unstained), check the ratio of proportion of positive events to total proportion, i.e. does a sample have more or less producers of a marker than average. The absolute number of events is thus removed. First a heatmap of average stimulation ratios. 
+
+```{r,echo=FALSE}
+W <- lapply(1:8, function(i) {tmp <- donor_coords_raw[sample_fac$stim == i, ]; return(colMeans(tmp))})
+
+cs <- colSums(donor_coords_raw)
+expr_mtx <- sapply(1:ncol(burt), function(j) sapply(1:length(W), function(i) (sum(W[[i]][burt[, j] == 2])/sum(W[[i]]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+colnames(expr_mtx) <- colnames(burt)
+rownames(expr_mtx) <- stim
+expr_mtx[expr_mtx == 0] <- 1
+pheatmap(log(expr_mtx))
+```
+
+```{r,echo=FALSE}
+unst <-  sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][rowSums(burt) == ncol(burt)])/sum(donor_coords_raw[i, ]))/(sum(cs[rowSums(burt) == ncol(burt)])/sum(cs)))
+
+expr_mtx_all <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2])/sum(donor_coords_raw[i, ]))/(sum(cs[burt[, j] == 2])/sum(cs))))
+expr_mtx_all <- cbind(expr_mtx_all, unst)
+expr_mtx_all[expr_mtx_all == 0] <- 1
+#pheatmap(log(expr_mtx_all)[order(sample_fac$stim), ], cluster_rows = FALSE)
+
+# expr_mtx_all1 <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2])/sum(donor_coords_raw[i, ]))))
+# expr_mtx_all1[expr_mtx_all1 == 0] <- 1
+
+
+singlepos <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2 & rowSums(burt) == 8])/sum(donor_coords_raw[i, ][rowSums(burt) > 7]))))
+#singlepos[singlepos == 0] <- 1
+colnames(singlepos) <-  paste(colnames(burt), 'single', sep = '_')
+
+totalpos <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) (sum(donor_coords_raw[i, ][burt[, j] == 2 ])/sum(donor_coords_raw[i, ][rowSums(burt) > 7]))))
+#totalpos[totalpos == 0] <- 1
+colnames(totalpos) <-  paste(colnames(burt), 'total', sep = '_')
+
+j = 7
+par(mfrow = c(2, 3)) 
+for (i in  c(1:3, 5, 7)) {
+  plot(totalpos[, j], singlepos[, i]/totalpos[, i], pch = 16, cex  = 2, xlab = colnames(burt)[j], ylab = colnames(burt)[i], col = sample_fac$stim)
+}
+
+
+i = 10
+j = 1
+donor_coords_raw[i, ][burt[, j] == 2 & rowSums(burt) == 8]
+
+
+```
+
+
+Repeat for all individual samples, and plot the SVD of this matrix. Colour-coded according to donor, and to stimulation. Already, the number of relative number of positive cells in a sample (with respect to total over all samples) is already a fingerprint of the stimulations. Next question is to understand how the markers interact. 
+
+```{r,echo=FALSE}
+
+par(mfrow = c(1, 2))
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$donor, main = 'donor')
+plot(svd(log(expr_mtx_all))$u, pch = 16, col = sample_fac$stim, main = 'stimulation')
+
+```
+
+Center the donors, and plot the 1st and 2nd, and 1st and 3rd components. This is coexpression at the sample level, and double counting any instance of co-expression at the cell level. On a larger dataset with more markers, could incorporate known information about transcription programmes to determine whether cytokines of the same programme are expanding independently (or whether different programmes are 'interacting')
+
+
+```{r,echo=FALSE}
+
+L <- log(expr_mtx_all)
+RM <- do.call(rbind, replicate(8,  by(L, sample_fac$donor, colMeans)))
+L <- L - RM
+colnames(L) <- c(colnames(burt), 'unst')
+
+pc <- glasso(cor(L), rho = 0.1)$wi
+colnames(pc) <- colnames(L)
+rownames(pc) <- colnames(L)
+#pheatmap(pc)
+
+G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+
+pairs(L, pch = 16, cex = 0.5)
+
+bp <- make_biplot(svd(L), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = c(colnames(burt), 'unst'))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+par(mfrow = c(1, 2))
+plot(bp$F[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 3]*2, lwd = 2, length = 0.1)
+text(bp$F[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G[, c(1, 3)]*2.5,  type = 'n')
+text(bp$G[, c(1, 3)]*2, labels = c(colnames(burt), 'unst'))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 3]*1.5, lwd = 2)
+
+
+bp <- make_biplot(svd(L[sample_fac$stim != 5 & sample_fac$stim !=8, ]), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim[sample_fac$stim != 5 & sample_fac$stim !=8]], col = sample_fac$stim[sample_fac$stim != 5 & sample_fac$stim !=8])
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = c(colnames(burt), 'unst'))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+
+
+```
+
+```{r,echo=FALSE}
+
+# expr_mtx_single_ratio <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) {
+#   #(
+#     #sum(donor_coords_raw[i, ][burt[, j] == 2 & rowSums(burt) == 6])#/
+#   sum(donor_coords_raw[i, ][burt[, j] == 2])#)#/(sum(cs[burt[, j] == 2 & rowSums(burt) == 6])/sum(cs[burt[, j] == 2]))
+# }
+# )
+# )
+# expr_mtx_single_ratio[expr_mtx_single_ratio == 0] <- 1
+# 
+# M1 <- sapply(1:ncol(burt), function(j) sapply(1:nrow(donor_coords_raw), function(i) {
+# (sum(donor_coords_raw[i, ][burt[, j] == 2 & rowSums(burt) == 6]) / sum(donor_coords_raw[i, ][burt[, j] == 2])) /
+#   (sum(cs[burt[, j] == 2 & rowSums(burt) == 6])/sum(cs[burt[, j] == 2]))
+# }
+# )
+# )
+# M1[is.infinite(M1) | is.nan(M1)] <- 1
+# M1[M1 == 0] <- 1
+# L <- log(M1, 2)
+# RM <- do.call(rbind, replicate(8,  by(L, sample_fac$donor, colMeans)))
+# L <- L - RM
+# 
+# bp <- make_biplot(svd(L), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n')
+# text(bp$G*2, labels = colnames(burt))
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+
+```
+
+
+Do something similar for all marginal two-way tables. First plot a heatmap. 
+
+```{r,echo=FALSE}
+
+
+# d2 <- sapply(1:4, function(j) sapply((j+1):5, function(i) sapply(1:nrow(donor_coords_raw), function(K) {
+#   
+#   sum(donor_coords_raw[K, burt[, i] == 2 & burt[, j] == 2])/(sum(cs[burt[, i] == 2 & burt[, j] == 2])/sum(cs))
+#   }
+#   )
+#   )
+#   )
+
+d2 <- sapply(1:6, function(j) sapply((j+1):7, function(i) sapply(1:nrow(donor_coords_raw), function(K) {
+  
+  sum(donor_coords_raw[K, burt[, i] == 2 & burt[, j] == 2])/(sum(cs[burt[, i] == 2 & burt[, j] == 2])/sum(cs))
+  }
+  )
+  )
+  )
+
+d2 <- do.call(cbind, d2)
+d2[is.na(d2)] <- 0
+colnames(d2) <- unlist(sapply(1:6, function(j) sapply((j+1):7, function(i) paste(colnames(burt)[i], colnames(burt)[j], sep = '_'))))
+d2[d2 == 0] <- 1
+pheatmap(log(d2, 2))
+```
+
+Then plot network, SVD. This is co-expression at the single cell level. Furthermore, this is trying to understand how single cell co-expression is systematically varying over samples. Need to do some kind of stability analysis on the network to make sure edges aren't due to 'anomalous' samples (although it is also interesting to know if isolated donors are doing their own thing). 
+
+
+```{r,echo=FALSE}
+L2 <- log(d2)
+L2 <- L2[, -19]
+RM <- do.call(rbind, replicate(8,  by(L2, sample_fac$donor, colMeans)))
+L2 <- L2 - RM
+
+# png('heatmap.png')
+# pheatmap(cor(cbind(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))], L[, c(1, 2, 3, 5, 7)])), cluster_rows = FALSE, cluster_cols= FALSE, breaks = seq(-0.5, 1, length.out = 100))
+# dev.off()
+
+pc <- glasso(cor(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))]), rho = 0.2)$wi
+colnames(pc) <- colnames(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))])
+rownames(pc) <- colnames(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))])
+#pheatmap(pc)
+
+
+G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+par(mfrow = c(1, 1))
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+
+#pheatmap(L2[order(sample_fac$stim), ], cluster_rows = FALSE)
+
+bp <- make_biplot(svd(L2), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = colnames(L2))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+par(mfrow = c(1, 2))
+plot(bp$F[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 3]*2, lwd = 2, length = 0.1)
+text(bp$F[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*3,  type = 'n')
+text(bp$G*2, labels = colnames(d2))
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 3]*1.5, lwd = 2)
+
+# only coexpression with IL10
+rownames(L2) <- stim[sample_fac$stim]
+bp <- make_biplot(svd(L2[, grep('IL10', colnames(L2))]), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = colnames(L2)[grep('IL10', colnames(L2))])
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+# only coexpression between IFNg, GMCSF, IL17, IL22
+bp <- make_biplot(svd(L2[, -c(grep('IL10', colnames(L2)), grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))]), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = colnames(L2)[-c(grep('IL10', colnames(L2)), grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))])
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+
+# only coexpression between IFNg, GMCSF, IL17, IL22
+# without virus
+bp <- make_biplot(svd(L2[sample_fac$stim != 5 & sample_fac$stim !=8, -c(grep('IL10', colnames(L2)), grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))]), 1, 3)
+#png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+par(mfrow = c(1, 2))
+plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+text(bp$F, labels = stim[sample_fac$stim][sample_fac$stim != 5 & sample_fac$stim !=8], col = sample_fac$stim[sample_fac$stim != 5 & sample_fac$stim !=8])
+plot(bp$G*2.5,  type = 'n')
+text(bp$G*2, labels = colnames(L2)[-c(grep('IL10', colnames(L2)), grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))])
+arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+
+
+
+```
+
+plot correlation matrix of at least single positive and at least double positive ratio matrices. 
+
+```{r,echo=FALSE}
+
+pheatmap(cor(cbind(L[, -c(4, 6, 8)], L2[, -c(grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))])))
+
+M <- cbind(L[, -c(4, 6, 8)], L2[, -c(grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))])
+pheatmap(cor(M))
+w <- strsplit(colnames(M), '_')
+mask <- lapply(1:14, function(i) sapply((i+1):15, function(j) sum(w[[i]] %in% w[[j]])))
+mask <- mapply(function(x) c(x, rep(0, 15 - length(x))), mask[14:1])
+mask <- cbind(0, mask)
+mask <- mask + t(mask)
+colnames(mask) <- colnames(M)
+rownames(mask) <- colnames(M)
+pheatmap(cor(M) * mask)
+
+corM <- cor(M)
+corM[corM < 0.3] <- 0
+pheatmap(corM)
+
+ G <- graph_from_adjacency_matrix(mask %*%cor(M) %*% mask, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+par(mfrow = c(1, 1))
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*10)
+
+
+
+
+par(mfrow = c(2, 2))
+plot(svd(M)$v, type = 'n')
+text(svd(M)$v, labels = colnames(M))
+plot(svd(M)$u, pch = 16, cex = 2, col = sample_fac$stim)
+
+plot(svd(M)$v[, c(1, 3)], type = 'n')
+text(svd(M)$v[, c(1, 3)], labels = colnames(M))
+plot(svd(M)$u[, c(1, 3)], pch = 16, cex = 2, col = sample_fac$stim)
+
+
+corM <- cor(M)[7:16, 1:5]
+bp <- 
+
+```
+
+Also plot double positives vs. single positives
+
+```{r,echo=FALSE}
+# for (i in 1:6) {
+# par(mfrow = c(2, 5), mar = c(5.1, 2, 2, 1)) 
+# for (j in 1:ncol(L2)) {
+#   plot(L[, i], L2[, j], pch = 16, xlab = colnames(L)[i], main = colnames(L2)[j], ylab = '', col = sample_fac$stim)
+# }
+# }
+
+# M <- cbind(L, L2)
+# 
+# pc <- glasso(cor(M), rho = 0.15)$wi
+# colnames(pc) <- colnames(M)
+# rownames(pc) <- colnames(M)
+# #pheatmap(pc)
+# 
+# G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+# E(G)$col <- 1
+# E(G)$col[E(G)$weight > 0] <- 2
+# E(G)$width <- abs(E(G)$weight)
+# plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+
+
+```
+
+Regress each double positive count onto the total counts and check the fit and residuals. Firstly, total counts reduces to bulk measurements (similar to a microarray). How well do the total counts reflect the explanatory power of the double positives? The most correlated total counts also have the best explained double positives. The question is, what is the reason for the other double positives?
+
+
+```{r,echo=FALSE}
+
+rsq <- 
+lapply(1:6, function(i) lapply((i+1):7, function(j) {
+#   i = 5
+#   j = 6
+#   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+df <- data.frame(x1 = L[, i], x2 = L[, j], y = L2[, which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))])
+if (ncol(df) == 3) {
+lmodel <- lm(y ~ x1 + x2, df)
+summary(lmodel)$r.squared} else {0}
+} 
+)
+)
+
+rsq <- mapply(function(x) c(rep(0, 7 - length(x)), unlist(x)), rsq)
+rsq <- cbind(rsq, 0)
+rsq <- rsq + t(rsq)
+colnames(rsq) <- colnames(L)[-8]
+rownames(rsq) <- colnames(L)[-8]
+pheatmap(rsq)
+r <- summary(lmodel)$r.squared
+# total counts: reduces to bulk measurements (e.g. microarrays). 
+# how does correlation between total counts reflect explantory power of double positives? probably fairly well. what is the reason for co-expression of non-correlated total counts?
+plot(c(cor(L[, -c(4, 6, 8)])), c(rsq[-c(4, 6, 8), -c(4, 6, 8)]), pch = 16, cex = 2)
+
+
+```
+
+Investigate the residuals. Plot correlation between double counts and residuals. 
+
+```{r,echo=FALSE}
+
+
+resid <- 
+lapply(1:6, function(i) lapply((i+1):7, function(j) {
+#   i = 5
+#   j = 6
+#   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+df <- data.frame(x1 = L[, i], x2 = L[, j], y = L2[, which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))])
+if (ncol(df) == 3) {
+lmodel <- lm(y ~ x1 + x2, df)
+lmodel$residuals
+}
+}
+)
+)
+resid <- unlist(resid, recursive = FALSE)
+resid <- resid[!mapply(is.null, resid)]
+resid <- do.call(cbind, resid)
+colnames(resid) <- colnames(L2)
+resid1 <- resid[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))]
+
+pheatmap(cor(cbind(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))], L[, c(1, 2, 3, 5, 7)])), cluster_rows = FALSE, cluster_cols= FALSE, breaks = seq(-0.5, 1, length.out = 100))
+
+pheatmap(cor(cbind(resid1, L[, c(1, 2, 3, 5, 7)])), cluster_rows = FALSE, cluster_cols= FALSE, breaks = seq(-0.5, 1, length.out = 100))
+
+# pc <- glasso(cor(cbind(resid1, L[, c(1, 2, 3, 5, 7)])), rho = 0.2)$wi
+# colnames(pc) <- colnames(cbind(resid1, L[, c(1, 2, 3, 5, 7)]))
+# rownames(pc) <- colnames(cbind(resid1, L[, c(1, 2, 3, 5, 7)]))
+# #pheatmap(pc)
+# 
+# 
+# 
+# pc <- cor(cbind(resid1, L[, c(1, 2, 3, 5, 7)]))
+# pc[1:10, 1:10] <- 0
+# pc[11:15, 11:15] <- 0
+# pc[pc < 0.1] <- 0
+# G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+# E(G)$col <- 1
+# E(G)$col[E(G)$weight > 0] <- 2
+# E(G)$width <- abs(E(G)$weight)
+# par(mfrow = c(1, 1))
+# plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+# 
+```
+
+regress double positives on all the single positives and make bipartite graph
+
+```{r,echo=FALSE}
+
+
+
+X <- L[, -c(4, 6, 8)]
+Y <- L2[, -c(grep('IL4', colnames(L2)), grep('IL5', colnames(L2)))]
+
+
+multiplelm <- 
+sapply(1:ncol(Y), function(i) {
+  df <- data.frame(cbind(Y[, i], X))
+  LM <- lm(V1 ~ IL10 + IL22 + GM.CSF + IFNg + IL17  , df)
+  summary(LM)$coefficients[, 4]
+}
+)
+
+colnames(multiplelm) <- colnames(Y)
+multiplelm <- multiplelm[-1, ]
+
+#pheatmap(log(multiplelm))
+
+bip <- multiplelm
+bip <- 1 - bip
+bip[bip < 0.99] <- 0
+bip <-
+cbind(
+rbind(matrix(0, ncol = ncol(bip), nrow = ncol(bip)), bip), 
+rbind(t(bip), matrix(0, nrow = nrow(bip), ncol = nrow(bip)))
+)
+diag(bip) <- 1
+rownames(bip) <- colnames(bip)
+
+G <- graph_from_adjacency_matrix(bip, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+par(mfrow = c(1, 1))
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*3)
+
+
+
+
+# par(mfrow = c(3, 3))
+# for (i in 1:7) {
+#   #plot(log(totalpos[, i]), log(singlepos[, i]), cex = 2, pch = 16, col= sample_fac$stim, main = colnames(burt)[i])
+#   plot(log(totalpos[, i]), log(singlepos[, i]), cex = 2, pch = 16, col= sample_fac$stim, main = colnames(burt)[i])
+# abline(a = 0, b = 1)
+# }
+#   
+# par(mfrow = c(3, 3))
+# for (i in 1:7) {
+#   plot(log(totalpos[, i]), log(singlepos[, i] / totalpos[, i]), cex = 2, pch = 16, col= sample_fac$stim, main = colnames(burt)[i])
+# abline(a = 0, b = 1)
+# }
+# 
+# 
+# 
+# par(mfrow = c(2, 3)) 
+# for (i in c(1:3, 5, 7)) {
+#   x <- log(totalpos[, i])[singlepos[, i] != 1]
+#   y <- log(singlepos[, i][singlepos[, i] != 1])
+#   
+#   #plot(L[, i][singlepos[, i] != 1], lm(y ~ x)$residuals, cex = 2, pch = 16, col= sample_fac$stim, main = colnames(burt)[i])
+#   boxplot(lm(y~x)$residuals ~ factor(sample_fac$stim[singlepos[, i] != 1]), main = colnames(burt)[i])
+#   #boxplot((y - x) ~ factor(sample_fac$stim[singlepos[, i] != 1]), main = colnames(burt)[i])
+# }
+
+
+
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

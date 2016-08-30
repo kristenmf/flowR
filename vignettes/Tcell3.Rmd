@@ -1,0 +1,793 @@
+---
+title: "antigen specific tcells"
+author: "Kristen Feher"
+date: "15 Aug 2016"
+output: html_document
+---
+
+# Introduction
+
+Flow cytometry data is typically analysed by gating but this is very labour-intensive. The direct algorithmic translation of gating is clustering, but it is well known to be hard to find the 'best' clustering. Furthermore, when analysing a large number of samples, there is the additional obstacle of matching clusters across samples. Such algorithms often turn out to be computationally intensive. 
+
+A clustering paradigm also forces cells into a discrete number of containers, however it may be the case that cells are existing 'between' states, i.e. cells are on a continuum. It may be more appropriate to describe cells states in a probabalistic fashion. Clustering yields list-type structures and this obscures the dynamic relationship between markers, especially as it manifests across a large number of samples. 
+
+To this end, we propose viewing flow cytometry data such that systematic variation of the markers is emphasised. We devise summary matrices that emphasise two aspects that are of key biological interest: marker coexpression at the sample level, and marker coexpression at the single cell level. There is also the possibility to examine how single cell coexpression depends on sample level coexpression. Some key features of this methodology is that it is computationally cheap, and summarises the data such that it can be readily integrated with other data sources, e.g. clinical covariates. 
+
+# Data
+
+Eight healthy donor samples are stimulated eight times each by eight different pathogens, yielding 64 samples. The pathogens are candida, E.coli and C.leptum (gut), mite, aspergillus and birchgrass (lung), CMV and influenza (virus). As antigen specific T-cells occur in such low numbers, they are first pre-enriched for CD4. The CD154 distribution is compared to that of an unstimulated sample for that donor, and only events with CD154 greater than the 95th percentile of the unstimlated are included. Among the stimulated cells, the following markers are of interest: IL17, IL22, IFNg, GM-CSF, IL4, IL5 and IL10. T-helper sets are defined as following: Th1 by IFNg, Th2 by IL4 and IL5, Th17 by IL17 and IL22. IL10 (is somehow implicated in) Tregs (regulatory Tcells). Th2 cells are thought/known to be implicated in allergic reactions when they are uncontrolled by Tregs. It is of interest to understand the pathogen specific regulation of coexpression as this points to the underlying transcriptional programmes that regulate cytokine expression. 
+
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+library(cluster)
+library(ggplot2)
+library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+library(igraph)
+library(glasso)
+library(plyr)
+devtools::load_all(".")
+
+fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/')
+Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
+metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
+
+markers <- c('IL10', 'IL22', 'GMCSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
+
+C <- factor(rep(1:10, 8))
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c("b-LP505 525_50-B-A", "b-LP650 675_20-A-A", "r-670_30-C-A", "v-LP555 575_15-B-A", "v-LP600 610_20-A-A", "yg-585_15-E-A", "yg-LP600 610_20-D-A", "yg-LP750 780_60-A-A"), lgcl)
+D_comp <- mapply(function(x) compensate(x, description(x)$`$SPILLOVER`), Data, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) exprs(transform(x, L)), D_comp, SIMPLIFY = FALSE)
+
+
+# comparing distribution of CD154, stimulated and unstimulated
+# df_cd154 <- sapply(1:8, function(i) sapply(1:2, function(j) sapply(1:5, function(k) {
+#   cbind(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == levels(metadata$X2)[j] & metadata$X3 == levels(metadata$X3)[k]][[1]][, 14], i, k + 5 * (j-1))
+# }
+# )
+# )
+# )
+# df_cd154 <- do.call(rbind, df_cd154)
+# colnames(df_cd154) <- c('cd154', 'donor', 'stim')
+# df_cd154 <- as.data.frame(df_cd154)
+# df_cd154$donor <- factor(df_cd154$donor)
+# df_cd154$stim <- factor(df_cd154$stim)
+# 
+# 
+# for (i in c(1, 3:10)){
+#   fn <- paste('cd154_', i, '.pdf', sep = '')
+# pdf(fn)
+# print(
+# ggplot(df_cd154[df_cd154$stim == as.character(i) | df_cd154$stim == '2', ], aes(cd154, colour = stim, fill = stim)) + geom_density(alpha = 0.1) + facet_wrap(~donor)
+# )
+# dev.off()
+# }
+
+Data <- mapply(exprs, Data)
+
+q <- lapply(1:8, function(i) quantile(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == '1' & metadata$X3 == '2'][[1]][, 14], 0.95))
+i = 1
+D_comp_cd154 <- lapply(1:8, function(i) {
+  tmp <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+  tmp <- mapply(function(x) x[x[, 14] > q[i], ], tmp, SIMPLIFY = FALSE)
+  return(tmp)
+}
+)
+D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
+
+D_comp_cd154 <- mapply(function(x) x[, markers_index], D_comp_cd154, SIMPLIFY = FALSE)
+for (i in 1:length(D_comp_cd154)) {
+  colnames(D_comp_cd154[[i]]) <- markers
+}
+
+D_comp_cd154 <- mapply(as.data.frame, D_comp_cd154, SIMPLIFY = FALSE)
+
+sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
+stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
+stim_type <- rep(c('lung', 'gut', 'lung', 'lung', 'virus', 'gut', 'gut', 'virus'), 8)
+
+```
+
+
+
+
+
+```{r,echo=FALSE}
+# breaks <- lapply(1:7, function(i) {
+# x <- unlist(mapply(function(x) x[, i], D_comp_cd154))
+# c(min(x), min(x) + ((max(x) - min(x))/2), max(x))
+# }
+# )
+
+# make_breaks <- function(X) {
+#   lapply(1:ncol(X[[1]]), function(i) {
+# x <- unlist(mapply(function(x) x[, i], X))
+# c(min(x), min(x) + ((max(x) - min(x))/2), max(x))
+# }
+# )
+# }
+# 
+breaks <- make_breaks(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE))
+
+
+# burt <- 
+# lapply(1:length(D_comp_cd154), function(i) {
+# x <- mapply(function(x, y) cut(x, y, FALSE, TRUE), D_comp_cd154[[i]][, -8], breaks)
+# tmp <- ddply(as.data.frame(x), markers[-8], nrow)
+# colnames(tmp)[8] <- 'counts'
+# tmp$counts <- tmp$counts/sum(tmp$counts)
+# tmp$which <- i
+# tmp
+# }
+# )
+
+# make_burt <- function(X, breaks, markers) {
+# tmp1 <- lapply(1:length(X), function(i) {
+# x <- mapply(function(x, y) cut(x, y, FALSE, TRUE), X[[i]], breaks)
+# tmp <- ddply(as.data.frame(x), markers, nrow)
+# colnames(tmp)[ncol(X[[1]]) + 1] <- 'counts'
+# tmp$counts <- tmp$counts/sum(tmp$counts)
+# tmp$which <- i
+# tmp
+# }
+# )
+# return(tmp1)
+# }
+
+burt <- make_burt(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE), breaks, markers[1:7])
+
+
+
+```
+
+# Basic statistics
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive, at least 5 times positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. Nothing is positive for 5 markers. 
+
+```{r,echo=FALSE}
+
+burt_all <- do.call(rbind, burt)
+apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+       
+       
+# at least double positive 
+apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 8 & x == 2])/sum(burt_all$counts))
+
+# at least triple positive 
+apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 9 & x == 2])/sum(burt_all$counts))
+
+# at least quadruple positive 
+apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 10 & x == 2])/sum(burt_all$counts))
+
+
+```
+
+# Sample level coexpression
+
+For each marker and unstained cell counts, check the ratio of proportion of positive events to average proportion over all samples, i.e. does a sample have more or less producers of a marker than average. The absolute number of events is thus removed, which can be problematic e.g. when comparing IFNg to IL4 or IL5.The log of ratios is taken, such that a positive value indicates more than average, and negative less than average.  First a heatmap of average  ratios for each stimulation, in order to gain an impression of sample level expression. 
+
+
+```{r,echo=FALSE}
+
+tot_pos <- apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+
+summary_mtx <- 
+  t(
+sapply(1:8, function(i) {
+tmp <- burt[sample_fac$stim == i]
+tmp1 <- sapply(tmp, function(.x) apply(.x[, 1:7], 2, function(y) by(.x$counts, y, sum)[2]))
+tmp1[is.na(tmp1)] <- 0
+rowMeans(tmp1)
+}
+)
+)
+colnames(summary_mtx) <- markers[-8]
+rownames(summary_mtx) <- stim
+
+pheatmap(log(sweep(summary_mtx, 2, tot_pos, '/')))
+
+```
+
+
+Perform a between-component analysis (BCA) on the full sample matrix. This is to visualise the relationship between stimulation centres - there could be addtional correlation within each stimulation that makes this relationship less clear. We proceed with a descriptive/exploratory analysis. 
+
+* IL17 and IL22 are correlated. This is consistent with Th17 subset. 
+* IFNg and GMCSF are correlated. This is the Th1 subset. Is it known/expected that GMCSF is coexpressed?
+* The number of unstained cells is anti-correlated with the Th1 subset. Normally the number of unstained cells is not considered, but it actually represents 'latent' processes that are not apparent with the current marker choice. 
+* IL4, IL5 and IL10 are correlated. IL4 and IL5 correspond with the Th2 subset. IL10 is grouped here because of the role Tregs have in dampening Th2 cells. 
+* IL10, IL4 and IL5 are roughly anti-correlated with IL17 and IL22. 
+* CMV and influenza (virus) have a tendency towards more frequent IFNg/GMCSF expression. 
+* Ecoli, candida and cleptum (gut) have a tendency towards more frequent IL17/IL22 expression. 
+* birch, aspergillus and mite (lung) have a tendency towards more frequent IL10/IL5 expression. 
+
+
+```{r,echo=FALSE}
+
+
+# expression_donor <- lapply(1:8, function(i) {
+# tmp <- burt[sample_fac$stim == i]
+# tmp1 <- sapply(tmp, function(.x) apply(.x[, 1:7], 2, function(y) by(.x$counts, y, sum)[2]))
+# tmp1[is.na(tmp1)] <- 0
+# t(tmp1)
+# }
+# )
+# expression_donor <- do.call(rbind, expression_donor)
+# expression_donor <- sweep(expression_donor, 2, tot_pos, '/')
+# expression_donor[expression_donor == 0] <- 1
+# expression_donor <- cbind(expression_donor, unst)
+# 
+
+# make_sample_coexp <- function(burt) {
+#   burt_all <- do.call(rbind, burt)
+#   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+# unst <- sapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == 7, 'counts'])
+# 
+#   expression_donor <- 
+# lapply(burt, function(.x) {
+# apply(.x[, 1:(ncol(burt_all) - 2)], 2, function(y) by(.x$counts, y, sum)[2])/tot_pos
+# })
+# expression_donor <- do.call(rbind, expression_donor)
+# expression_donor[is.na(expression_donor)] <- 1
+# expression_donor <- cbind(expression_donor, unst)
+# return(expression_donor)
+#   }
+
+
+sample_coexp <- make_sample_coexp(burt)
+# expression_donor <- 
+# lapply(burt, function(.x) {
+# apply(.x[, 1:7], 2, function(y) by(.x$counts, y, sum)[2])/tot_pos
+# })
+# expression_donor <- do.call(rbind, expression_donor)
+# expression_donor[is.na(expression_donor)] <- 1
+# expression_donor <- cbind(expression_donor, unst)
+# 
+# par(mfrow = c(1, 2))
+# plot(svd(log(expression_donor))$u, pch = 16, col = sample_fac$donor, main = 'donor')
+# plot(svd(log(expression_donor))$u, pch = 16, col = sample_fac$stim, main = 'stimulation')
+
+L <- log(sample_coexp)
+RM <- do.call(rbind, replicate(8,  by(L, sample_fac$donor, colMeans)))
+L <- L - RM
+colnames(L) <- c(markers[-8], 'unst')
+
+pca <- dudi.pca(L, scan = FALSE, nf = 8)
+betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 6)
+
+par(mfrow = c(1, 2))
+s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+s.arrow(betw$c1)
+```
+
+The correlation between markers can alternatively be represented as network. It has basically the same information as the righthand plot above. Orange indicates positive correlation, blue represents negative correlation. The thickness of the line indicates the strength of association. 
+
+```{r,echo=FALSE}
+pc <- glasso(cor(L), rho = 0.1)$wi
+colnames(pc) <- colnames(L)
+rownames(pc) <- colnames(L)
+#pheatmap(pc)
+
+G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+```
+
+It is also possible to look at differences within the three broad categories gut, lung and virus. 
+
+* C.leptum and candida both have more frequent IL4 and IL10 than E.coli. 
+* Candida has more frequent GMCSF and less frequent IL5 than C.leptum. 
+
+```{r,echo=FALSE}
+
+pca_gut <- dudi.pca(L[stim_type == 'gut', ], scan = FALSE, nf = 8)
+betw_gut <- bca(pca_gut, factor(stim[sample_fac$stim][stim_type == 'gut']), scan = FALSE, nf = 4)
+par(mfrow = c(1, 2))
+s.class(betw_gut$ls, factor(stim[sample_fac$stim][stim_type == 'gut']))
+s.arrow(betw_gut$c1)
+```
+
+* Mite has more frequent IL10 and IL5, and less frequent unstained cells than aspergillus and birch. 
+
+```{r,echo=FALSE}
+pca_lung <- dudi.pca(L[stim_type == 'lung', ], scan = FALSE, nf = 8)
+betw_lung <- bca(pca_lung, factor(stim[sample_fac$stim][stim_type == 'lung']), scan = FALSE, nf = 4)
+par(mfrow = c(1, 2))
+s.class(betw_lung$ls, factor(stim[sample_fac$stim][stim_type == 'lung']))
+s.arrow(betw_lung$c1)
+```
+
+* Influenza has more IL4, IL5, IL10 and GMCSF than CMV. 
+
+```{r,echo=FALSE}
+pca_virus <- dudi.pca(L[stim_type == 'virus', ], scan = FALSE, nf = 8)
+par(mfrow = c(1, 2))
+s.class(pca_virus$li, factor(stim[sample_fac$stim][stim_type == 'virus']))
+s.arrow(pca_virus$c1)
+
+
+
+# bp <- make_biplot(svd(L), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n')
+# text(bp$G*2, labels = c(markers[-8], 'unst'))
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2)
+# 
+# bp <- make_biplot(svd(L), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F[, c(1, 3)],  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 3]*2, lwd = 2, length = 0.1)
+# text(bp$F[, c(1, 3)], labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G[, c(1, 3)]*2.5,  type = 'n')
+# text(bp$G[, c(1, 3)]*2, labels = c(markers[-8], 'unst'))
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 3]*1.5, lwd = 2)
+
+
+```
+
+# Single cell coexpression
+
+## Normalised to average number over all samples
+
+For every pair of markers, a matrix is constructed with ratio of (at least) double positive cells to the average. The log is taken so when a sample has more than average the value is positive, and when less than average the value is negative. Some combinations are very rare, so if the count is zero in more than 25% of samples, the combination is removed. 
+
+
+```{r,echo=FALSE}
+
+# make_cell_coexp <- function(burt, markers) {
+#   
+#   burt_all <- do.call(rbind, burt)
+#   N <- ncol(burt_all) - 2
+#   
+# double_all <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#   sum(burt_all[burt_all[, i] == 2 & burt_all[, j] == 2, 'counts'])
+#   }
+#   )
+#   )
+# )/length(burt)
+# 
+# double_pos <- t(sapply(1:length(burt), function(k) {
+#   unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#   sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
+#   }
+#   )
+#   )
+# )
+# }
+# )
+# )
+# cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+# colnames(double_pos) <- cn
+# double_pos <- sweep(double_pos, 2, double_all, '/')
+# double_pos[double_pos == 0] <- 1
+# return(double_pos)
+# 
+# }
+
+
+# C <- cor(L)
+
+
+# make_twoD_marginal <- function(burt, markers) {
+#   
+#   N <- ncol(burt[[1]]) - 2
+# P <- t(sapply(1:length(burt), function(k) {
+#   unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#   sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])/(sum(burt[[k]][burt[[k]][, i] == 2, 'counts']) * sum(burt[[k]][burt[[k]][, j] == 2, 'counts']))
+#   }
+#   )
+#   )
+# )
+# }
+# )
+# )
+# 
+# cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+# 
+# colnames(P) <- cn
+# P[is.na(P)] <- 1
+# P[P == 0] <- 1
+# return(P)
+# 
+# }
+
+cell_coexp <- make_cell_coexp(burt, markers[1:7])
+twoD_marginal <- make_twoD_marginal(burt, markers[1:7])
+
+
+L2 <- log(cell_coexp)
+RM <- do.call(rbind, replicate(8,  by(L2, sample_fac$donor, colMeans)))
+L2 <- L2 - RM
+
+missing_vals <- apply(L2, 2, function(x) length(which(x == 0)))/length(burt)
+#L2 <- L2[, missing_vals < 0.25]
+
+#pheatmap(cor(L2))
+
+```
+
+It might be naively expected that marker counts might drive the double positive marker counts. Specifically, it might be expected that markers which are coexpressed in the sample might also be coexpressed at the single cell level. If not, what is driving the single cell coexpression?
+
+To investigate this, first regress the double positive counts on the pair of total counts. For example, regress the IL17IL22 double positive counts on both IL17 total counts and IL22 total counts simultaneously. Then plot the $R^2$ value of this regression against the absolute value of correlation between the total marker counts (e.g. correlation between IL17 total counts and IL22 total counts). Correlation which is originally negative is plotted in black. 
+
+It can be seen that only 3 pairs are well-explained by their parent counts: IL17-IL22, IFNg-GMCSF, and IL4-IL5. These pairs correspond to the Thelper subsets. This is potentially a valuable method for filtering double positive counts when there is a larger number of markers and/or uncharacterised markers.   
+
+```{r,echo=FALSE}
+# rsq <- 
+# lapply(1:6, function(i) lapply((i+1):7, function(j) {
+# #   i = 5
+# #   j = 6
+# #   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+# df <- data.frame(x1 = L[, i], x2 = L[, j], y = L2[, which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))])
+# if (ncol(df) == 3) {
+# lmodel <- lm(y ~ x1 + x2, df)
+# summary(lmodel)$r.squared} else {0}
+# } 
+# )
+# )
+# 
+# rsq <- unlist(rsq)
+
+# make_rsq <- function(sample_coexp, cell_coexp, markers) { # can be donor-centered versions if necessary
+#   N <- ncol(L) - 1
+# rsq <- lapply(1:(N - 1), function(i) lapply((i+1):N, function(j) {
+# #   i = 5
+# #   j = 6
+# #   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+# df <- data.frame(x1 = sample_coexp[, i], x2 = sample_coexp[, j], y = cell_coexp[, which(paste(colnames(sample_coexp)[j], colnames(sample_coexp)[i], sep= '_') == colnames(cell_coexp))])
+# if (ncol(df) == 3) {
+# lmodel <- lm(y ~ x1 + x2, df)
+# summary(lmodel)$r.squared} else {0}
+# } 
+# )
+# )
+#
+# rsq <- unlist(rsq)
+# 
+# cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+# C <- cor(do.call(rbind, (by(L, factor(sample_fac$stim), colMeans))))
+# cor_markers <- unlist(sapply(1:(N-1), function(i) C[(i+1):N, i]))
+# names(cor_markers) <- cn
+# 
+# return(list(rsq = rsq, cor = cor_markers))
+# }
+
+rsq <- make_rsq(L, L2, markers[1:7])
+
+
+
+par(mfrow = c(1, 1))
+plot(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], pch = 16, cex = 1, type = 'n', xlab = '|correlation coefficient|', ylab = 'R square')
+text(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], names(rsq$cor)[missing_vals < 0.25], col = sign(rsq$cor)[missing_vals < 0.25] +2)
+abline(lm(rsq$rsq[missing_vals < 0.25] ~ abs(rsq$cor[missing_vals < 0.25])))
+```
+
+Perform a BCA on the double positive count matrix. The three categories gut, lung and virus don't necessarily group together, in particular, CMV and influenza have been separated. 
+
+```{r,echo=FALSE}
+#pc <- glasso(cor(L2[, -c(grep('IL5', colnames(L2)), grep('IL4', colnames(L2)))]), rho = 0.2)$wi
+# pc <- glasso(cor(L2), rho = 0.3)$wi
+# colnames(pc) <- colnames(L2)
+# rownames(pc) <- colnames(L2)
+# #pheatmap(pc)
+# 
+# 
+# pc <- glasso(cor(C), rho = 0.5)$wi
+# rownames(pc) <- colnames(C)
+# colnames(pc) <- colnames(C)
+# G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+# E(G)$col <- 1
+# E(G)$col[E(G)$weight > 0] <- 2
+# E(G)$width <- abs(E(G)$weight)
+# par(mfrow = c(1, 1))
+# plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+# 
+
+# bp <- make_biplot(svd(L2), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n')
+# text(bp$G*2, labels = colnames(L2), cex = 0.5)
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2, length = 0.1)
+
+L2 <- L2[, missing_vals < 0.25]
+pca <- dudi.pca(L2, scan = FALSE, nf = 8)
+betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+par(mfrow = c(1, 2))
+s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+s.arrow(betw$c1, clabel = 0.5)
+
+#coinertia analysis, not sure what it brings
+pca1 <- dudi.pca(L, scan = FALSE, nf = 8)
+bet <- bca(pca, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
+bet1 <- bca(pca1, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
+coin <- coinertia(bet, bet1, scannf = FALSE)
+plot(coin)
+
+```
+
+Visually inspecting the correlation between all double positive counts, there are two strong groups and one weaker group. 
+
+* IL4-IL10, IL4-IL5, IFNg-IL4, IFNg-IL10, IL4-GMCSF (group 1)
+
+* IL17-IL22, IFNg-IL22, IL17-IFNg (group 2)
+
+* GMCSF-IL10, IFNg-GMCSF, IL22-IL10, IL17-IL10, GMCSF-IL22, IL17-GMCSF (group 3)
+
+
+```{r,echo=FALSE}
+
+# cross correlation matrix
+pheatmap(cor(L2))
+
+# groups <- list(c(8, 7, 14), c(1, 5, 6, 11))
+# groups[[3]] <- (1:14)[-unlist(groups)]
+# 
+# bp <- make_biplot(svd(L2[, groups[[1]]]), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n', xlim = c(0, 1.8))
+# text(bp$G*2, labels = colnames(L2)[groups[[1]]], cex = 1)
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2, length = 0.1)
+# pca <- dudi.pca(L2[, groups[[1]]], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1)
+# 
+# df <- lapply(1:8, function(i) data.frame(x = factor(colnames(L2)[groups[[1]]]), y = colMeans(L2[sample_fac$stim == i, groups[[1]]]), stim = stim[i]))
+# df <- do.call(rbind, df)
+# ggplot(df, aes(x = x, y = y, group = stim, colour = stim)) + geom_line()
+# 
+# 
+# bp <- make_biplot(svd(L2[, groups[[2]]]), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n', xlim = c(0, 1.7))
+# text(bp$G*2, labels = colnames(L2)[groups[[2]]], cex = 1)
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2, length = 0.1)
+# pca <- dudi.pca(L2[, groups[[2]]], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1)
+# 
+# df <- lapply(1:8, function(i) data.frame(x = factor(colnames(L2)[groups[[2]]]), y = colMeans(L2[sample_fac$stim == i, groups[[2]]]), stim = stim[i]))
+# df <- do.call(rbind, df)
+# ggplot(df, aes(x = x, y = y, group = stim, colour = stim)) + geom_line()
+# 
+# 
+# 
+# bp <- make_biplot(svd(L2[, groups[[3]]]), 1, 3)
+# #png('/Users/kristenfeher/Desktop/biplot_donors.png', height = 400, width= 700)
+# par(mfrow = c(1, 2))
+# plot(bp$F,  type= 'n', xlab = 'biplot axis 1', ylab = 'biplot axis 2', cex.lab = 1.5, main = 'biplot of donors', col = metadata[, 3], pch = 16)
+# arrows(0, 0, bp$G[, 1]*2, bp$G[, 2]*2, lwd = 2, length = 0.1)
+# text(bp$F, labels = stim[sample_fac$stim], col = sample_fac$stim)
+# plot(bp$G*2.5,  type = 'n')
+# text(bp$G*2, labels = colnames(L2)[groups[[3]]], cex = 1)
+# arrows(0, 0, bp$G[, 1]*1.5, bp$G[, 2]*1.5, lwd = 2, length = 0.1)
+# pca <- dudi.pca(L2[, groups[[3]]], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1)
+# 
+# df <- lapply(1:8, function(i) data.frame(x = factor(colnames(L2)[groups[[3]]]), y = colMeans(L2[sample_fac$stim == i, groups[[3]]]), stim = stim[i]))
+# df <- do.call(rbind, df)
+# ggplot(df, aes(x = x, y = y, group = stim, colour = stim)) + geom_line()
+# 
+# df <- lapply(1:8, function(i) data.frame(x = factor(colnames(L2)[unlist(groups)], levels = colnames(L2)[unlist(groups)]), y = colMeans(L2[sample_fac$stim == i, unlist(groups)]), stim = stim[i]))
+# df <- do.call(rbind, df)
+# ggplot(df, aes(x = x, y = y, group = stim, colour = stim)) + geom_line()
+
+
+```
+
+It is of interest to know the connection between double positive counts and total counts. To do this, calculate the cross-correlation matrix. The group structure of above is maintained, except interestingly, IFNg-GMSCF switches to group 1 (I don't know why yet). Then we can see:
+
+* group 1 is anticorrelated to IL22, IL17 and unstained cells, but no other marker strongly drives as a whole. This means that the fewer IL22, IL17 and unstained cells there are, the more these marker pairs can expand. 
+
+* group 2 is strongly correlated to IL22 and IL17, and anti-correlated to IL4, IL5 and IL10. We have already seen that IL17-IL22 is well explained by its parent counts, and is strongly negatively correlated with IFNg. However, IFNg-IL22 and IL17-IFNg aren't strongly anticorrelated with IFNg. This means that these marker pairs can expand in the absence of IL4, IL5, IL10. But IFNg-IL22 and IL17-IFNg require IFNg. So what drives these pairs, IL17 or IFNg?
+
+* group 3 (minus IFNg-GMCSF) is anti-correlated to IFNg, with the exception of GMCSF-IL10, i.e. they can expand in the absence of IFNg. 
+
+* what is the most useful way to pick out stimulations that contribute to this? I don't simply want to make an endless list. 
+
+* IFNg-GMCSF and GMCSF-IL10 seem to be slightly curious combinations. They don't fit really well with other marker pairs. 
+
+
+```{r,echo=FALSE}
+C <- cor(cbind(L, L2))[1:8, 9:22]
+pheatmap(C)
+
+
+
+```
+
+Just for interest, here is the correlation matrix of the above cross-correlation matrix. It is quite similar to the original correlation matrix above in terms of group structure, except for IFNg-GMCSF and GMCSF-IL10 which are weakly in group 1. GMCSF-IL10 somehow maintains a foot in group 3. 
+
+```{r,echo=FALSE}
+pheatmap(cor(C))
+```
+
+# Single Cell coexpression
+
+## Normalised to expected number given total counts within sample
+
+We can make another double positive matrix, taking into account the contingency table structure. Suppose in one sample, there are 10% IL17 cells, and 12% IL17 cells. If the cells are double positive at random, then there would be (0.1)(0.12) = 1.2% cells. In fact, if there are actually 5% cells, then the value for that sample in the IL17-IL22 column would be $log(5/1.2, 2) = 2.06$. This means there are 4 times the number of IL17-IL22 cells than expected, given the total IL17 and IL22 counts. 
+
+First plot BCA. 
+
+```{r,echo=FALSE}
+
+
+L3 <- log(twoD_marginal)
+RM <- do.call(rbind, replicate(8,  by(L3, sample_fac$donor, colMeans)))
+L3 <- L3 - RM
+L3 <- L3[, missing_vals < 0.25]
+
+
+
+pca <- dudi.pca(L3, scan = FALSE, nf = 8)
+betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+#plot(betw, col = sample_fac$stim)
+
+par(mfrow = c(1, 2))
+#s.class(pca$li, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+s.arrow(betw$c1, clabel = 0.5)
+
+# just for fun, all three matrices combined into one
+# pca <- dudi.pca(cbind(L, L2, L3), scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# #plot(betw, col = sample_fac$stim)
+# 
+# par(mfrow = c(1, 2))
+# #s.class(pca$li, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.class(betw$ls[, c(1, 2)], factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# #s.class(betw$ls[, c(1, 3)], factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1[, c(1, 2)], clabel = 0.5)
+
+
+```
+
+Turn straight to the cross-correlation matrix
+
+* groups are less prominent than in cell coexpression matrix above
+
+* IL17-IL22 is negatively correlated with IL22, IL17 and unstained. This means, that the fewer IL22, IL17 and unstained cells that are produced, the more preferentially they will be coexpressed (i.e. IL22 and IL17 production is more preferentially directed to being coexpressed and not coexpressed with other markers). Conversely, the more total IL22 and IL17 that is being produced, there is more 'freedom' to combine with other markers. 
+
+* IFNg-IL19, IL22-IL10 and IL4-IL10 are weakly following the lead of IL17-IL22. 
+
+* IFNg-GMCSF is negatively correlated with GMCSF and IFNg, and positively correlated with unstained cells. This means, the less total IFNg and GMCSF being produced, the more preferentially they will be coexpressed with each and not with other markers (and vice versa). 
+
+* IFNg-IL4, IFNg-IL22, GMCSF-IL22, IL17-GMCSF, IL17-IL10, IL17-IFNg are  following the lead of IFNg-GMCSF. 
+
+* There is another small group: IL5-IL4, IL4-GMCSF, GMCSF-IL10 that is slightly more correlated with IL10, IL4 and IL5 than the group above. 
+
+
+```{r,echo=FALSE}
+
+
+# cross correlation matrix
+C <- cor(cbind(L, L3))[1:8, 9:22]
+pheatmap(C)
+
+pheatmap(cor(C))
+
+
+```
+
+
+
+
+```{r,echo=FALSE}
+# rsq <- 
+# lapply(1:6, function(i) lapply((i+1):7, function(j) {
+# #   i = 5
+# #   j = 6
+# #   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+# df <- data.frame(x1 = L[, i], x2 = L[, j], y = L2[, which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))])
+# if (ncol(df) == 3) {
+# lmodel <- lm(y ~ x1 + x2, df)
+# summary(lmodel)$r.squared} else {0}
+# } 
+# )
+# )
+# 
+# rsq <- unlist(rsq)
+# 
+# par(mfrow = c(1, 1))
+# plot(abs(cor_markers)[missing_vals < 0.25], rsq[missing_vals < 0.25], pch = 16, cex = 1, type = 'n')
+# text(abs(cor_markers)[missing_vals < 0.25], rsq[missing_vals < 0.25], names(cor_markers)[missing_vals < 0.25], col = sign(cor_markers)[missing_vals < 0.25] +2)
+# abline(lmrob(rsq[missing_vals < 0.25] ~ abs(cor_markers[missing_vals < 0.25])))
+# 
+# rsq_pearson <- 
+# lapply(1:6, function(i) lapply((i+1):7, function(j) {
+# #   i = 5
+# #   j = 6
+# #   which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))
+# df <- data.frame(x1 = L[, i], x2 = L[, j], y = L3[, which(paste(colnames(L)[j], colnames(L)[i], sep= '_') == colnames(L2))])
+# if (ncol(df) == 3) {
+# lmodel <- lm(y ~ x1 + x2, df)
+# summary(lmodel)$r.squared} else {0}
+# } 
+# )
+# )
+# 
+# rsq_pearson <- unlist(rsq_pearson)
+# 
+# par(mfrow = c(1, 1))
+# plot(abs(cor_markers)[missing_vals < 0.25], rsq_pearson[missing_vals < 0.25], pch = 16, cex = 1, type = 'n')
+# text(abs(cor_markers)[missing_vals < 0.25], rsq_pearson[missing_vals < 0.25], names(cor_markers)[missing_vals < 0.25], col = sign(cor_markers)[missing_vals < 0.25] +2)
+# abline(lmrob(rsq_pearson[missing_vals < 0.25] ~ abs(cor_markers[missing_vals < 0.25])))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
