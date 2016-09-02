@@ -1,6 +1,6 @@
 ---
-title: "antigen specific tcells"
-author: "Kristen Feher"
+title: "antigen specific tcells - marker coexpression"
+author: "Kristen Feher (DRFZ, Berlin)"
 date: "15 Aug 2016"
 output: html_document
 ---
@@ -11,7 +11,8 @@ Flow cytometry data is typically analysed by gating but this is very labour-inte
 
 A clustering paradigm also forces cells into a discrete number of containers, however it may be the case that cells are existing 'between' states, i.e. cells are on a continuum. It may be more appropriate to describe cells states in a probabalistic fashion. Clustering yields list-type structures and this obscures the dynamic relationship between markers, especially as it manifests across a large number of samples. 
 
-To this end, we propose viewing flow cytometry data such that systematic variation of the markers is emphasised. We devise summary matrices that emphasise two aspects that are of key biological interest: marker coexpression at the sample level, and marker coexpression at the single cell level. There is also the possibility to examine how single cell coexpression depends on sample level coexpression. Some key features of this methodology is that it is computationally cheap, and summarises the data such that it can be readily integrated with other data sources, e.g. clinical covariates. 
+To this end, we propose viewing flow cytometry data such that systematic variation of the markers is emphasised. We devise summary matrices of a large number of samples that emphasise two aspects that are of key biological interest: marker coexpression at the sample level (bulk frequency), and marker coexpression at the single cell level (double positive frequency). There is also the possibility to examine how single cell coexpression depends on sample level coexpression. Some key features of this methodology is that it is computationally cheap, and summarises the data such that it can be readily integrated with other data sources, e.g. clinical covariates. 
+
 
 # Data
 
@@ -22,15 +23,16 @@ Eight healthy donor samples are stimulated eight times each by eight different p
 ```{r, warning=FALSE,echo=FALSE,message=FALSE}
 library(flowCore)
 library(pheatmap)
-library(cluster)
+#library(cluster)
 library(ggplot2)
-library(reshape)
+#library(reshape)
 library(ade4)
-library(ca)
+#library(ca)
 library(vcd)
 library(igraph)
 library(glasso)
 library(plyr)
+#library(dunn.text)
 devtools::load_all(".")
 
 # load data
@@ -39,7 +41,7 @@ fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/
 Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
 metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
 
-markers <- c('IL10', 'IL22', 'GMCSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+Markers <- c('IL10', 'IL22', 'GMCSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
 markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
 
 C <- factor(rep(1:10, 8))
@@ -67,7 +69,7 @@ D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
 
 D_comp_cd154 <- mapply(function(x) x[, markers_index], D_comp_cd154, SIMPLIFY = FALSE)
 for (i in 1:length(D_comp_cd154)) {
-  colnames(D_comp_cd154[[i]]) <- markers
+  colnames(D_comp_cd154[[i]]) <- Markers
 }
 
 D_comp_cd154 <- mapply(as.data.frame, D_comp_cd154, SIMPLIFY = FALSE)
@@ -86,7 +88,7 @@ stim_type <- rep(c('lung', 'gut', 'lung', 'lung', 'virus', 'gut', 'gut', 'virus'
 breaks <- make_breaks(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE))
 
 
-burt <- make_burt(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE), breaks, markers[1:7])
+burt <- make_burt(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE), breaks, Markers[1:7])
 
 
 
@@ -94,7 +96,7 @@ burt <- make_burt(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE), 
 
 # Basic statistics
 
-Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive, at least 5 times positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. Nothing is positive for 5 markers. 
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. In this dataset, the majority of stained cells are single or double positive. 
 
 ```{r,echo=FALSE}
 
@@ -116,7 +118,12 @@ apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7
 
 # Sample level coexpression
 
-For each marker and unstained cell counts, check the ratio of proportion of positive events to average proportion over all samples, i.e. does a sample have more or less producers of a marker than average. The absolute number of events is thus removed, which can be problematic e.g. when comparing IFNg to IL4 or IL5.The log of ratios is taken, such that a positive value indicates more than average, and negative less than average.  First a heatmap of average  ratios for each stimulation, in order to gain an impression of sample level expression. 
+
+Construct a matrix where each row is a donor, and each column corresponds to a marker. Each entry is the logratio of the donor's marker frequency to the average marker frequency. Here, 'marker frequency' corresponds to the proportion of events in a sample that is positive for a marker, and includes single positive events, double positive events, triple positive event etc, and corresponds to a univariate marker histogram. Then it is possible to discern whether a marker is positive more or less frequently than average. By investigating the logratios, the absolute number of events is removed which can be problematic, e.g. when comparing IFNg to IL4/IL5. The final column of the matrix consists of the logratio of frequency of unstained cells in each sample and the  average frequency of unstained cells. 
+
+The matrix summarises how markers are coexpressed in a sample. It is a bulk measurement that is averaged over all events in a sample. It contains no explicit information about coexpression on the single cell level. However, as the total frequency of each marker is a mixture of single positive and double positive frequencies, it is hidden as a latent process. 
+
+The first impression of this bulk matrix is gained by plotting a heatmap of the average logratios within each stimulation. 
 
 
 ```{r,echo=FALSE}
@@ -133,7 +140,7 @@ rowMeans(tmp1)
 }
 )
 )
-colnames(summary_mtx) <- markers[-8]
+colnames(summary_mtx) <- Markers[-8]
 rownames(summary_mtx) <- stim
 
 pheatmap(log(sweep(summary_mtx, 2, tot_pos, '/')))
@@ -141,10 +148,10 @@ pheatmap(log(sweep(summary_mtx, 2, tot_pos, '/')))
 ```
 
 
-Perform a between-component analysis (BCA) on the full sample matrix. This is to visualise the relationship between stimulation centres - there could be addtional correlation within each stimulation that makes this relationship less clear. We proceed with a descriptive/exploratory analysis. 
+Perform a between-component analysis (BCA) on the bulk matrix. This is to visualise the relationship between stimulation centres - there could be addtional correlation within each stimulation that makes this relationship less clear. We proceed with a descriptive/exploratory analysis. 
 
 * IL17 and IL22 are correlated. This is consistent with Th17 subset. 
-* IFNg and GMCSF are correlated. This is the Th1 subset. Is it known/expected that GMCSF is coexpressed?
+* IFNg and GMCSF are weakly correlated (they look more correlated in this projection than they really are, the third dimension reveal that they have different 'heights'). This is the Th1 subset. Is it known/expected that GMCSF is coexpressed?
 * The number of unstained cells is anti-correlated with the Th1 subset. Normally the number of unstained cells is not considered, but it actually represents 'latent' processes that are not apparent with the current marker choice. 
 * IL4, IL5 and IL10 are correlated. IL4 and IL5 correspond with the Th2 subset. IL10 is grouped here because of the role Tregs have in dampening Th2 cells. 
 * IL10, IL4 and IL5 are roughly anti-correlated with IL17 and IL22. 
@@ -163,7 +170,7 @@ sample_coexp <- make_sample_coexp(burt)
 L <- log(sample_coexp)
 RM <- do.call(rbind, replicate(8,  by(L, sample_fac$donor, colMeans)))
 L <- L - RM
-colnames(L) <- c(markers[-8], 'unst')
+colnames(L) <- c(Markers[-8], 'unst')
 
 pca <- dudi.pca(L, scan = FALSE, nf = 8)
 betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 6)
@@ -171,9 +178,30 @@ betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 6)
 par(mfrow = c(1, 2))
 s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
 s.arrow(betw$c1)
+
+#dunn.test(L[, 7], factor(stim_type), kw = TRUE, label = TRUE)
+
 ```
 
-The correlation between markers can alternatively be represented as network. It has basically the same information as the righthand plot above. Orange indicates positive correlation, blue represents negative correlation. The thickness of the line indicates the strength of association. 
+Boxplot and kruskal-wallis test (p value displayed in header of each plot) of each marker with respect to lung, gut and virus stimulation types. Not only does it confirm correlation structure above (which is calculated directly on the eight stimulation types) but it demonstrates a general pattern for the three stimulation types. 
+
+The kruskal-wallis test is to determine a difference in medians. IL10 and IL5 don't appear to have any median differences, but it can be observed that the stimulation types have different ranges. For example, for IL10, gut has a greater number of  lower observations whereas lung has a greater number of higher observations. 
+
+
+```{r,echo=FALSE}
+o <- c(8, 1, 6, 4, 3, 5, 2, 7)
+par(mfrow = c(2, 4))
+for (i in 1:8){
+  pval <- signif(kruskal.test(L[, o[i]], factor(stim_type))$p.value, 2)
+  boxplot(L[, o[i]] ~ factor(stim_type), main = paste(colnames(L)[o[i]], pval), las = 2)
+  #axis(1, at = 1:3, labels = FALSE)
+  #text(1:3, par('usr')[3] - 0.2, labels = c('gut', 'lung', 'virus'), srt = 45, pos = 2, xpd = TRUE)
+          }
+
+```
+
+The correlation between marker frequencies can alternatively be represented as network if you like that sort of thing. It has basically the same information as the righthand plot above. Orange indicates positive correlation, blue represents negative correlation. The thickness of the line indicates the strength of association. 
+
 
 ```{r,echo=FALSE}
 pc <- glasso(cor(L), rho = 0.1)$wi
@@ -199,6 +227,13 @@ betw_gut <- bca(pca_gut, factor(stim[sample_fac$stim][stim_type == 'gut']), scan
 par(mfrow = c(1, 2))
 s.class(betw_gut$ls, factor(stim[sample_fac$stim][stim_type == 'gut']))
 s.arrow(betw_gut$c1)
+
+par(mfrow = c(2, 4))
+for (i in 1:8){
+  pval <- signif(kruskal.test(L[stim_type == 'gut', i], sample_fac$stim[stim_type == 'gut'])$p.value, 2)
+  boxplot(L[stim_type == 'gut',i] ~ factor(sample_fac$stim[stim_type == 'gut']), main = paste(colnames(L)[i], pval), xaxt = 'n')
+  axis(1, 1:3, c('can', 'ecoli', 'clep'), las = 2)
+}
 ```
 
 * Mite has more frequent IL10 and IL5, and less frequent unstained cells than aspergillus and birch. 
@@ -209,9 +244,19 @@ betw_lung <- bca(pca_lung, factor(stim[sample_fac$stim][stim_type == 'lung']), s
 par(mfrow = c(1, 2))
 s.class(betw_lung$ls, factor(stim[sample_fac$stim][stim_type == 'lung']))
 s.arrow(betw_lung$c1)
+
+
+par(mfrow = c(2, 4))
+for (i in 1:8){
+  pval <- signif(kruskal.test(L[stim_type == 'lung', i], sample_fac$stim[stim_type == 'lung'])$p.value, 2)
+  boxplot(L[stim_type == 'lung',i] ~ factor(sample_fac$stim[stim_type == 'lung']), main = paste(colnames(L)[i], pval), xaxt = 'n')
+  axis(1, 1:3, c('asp', 'mite', 'bgr'), las = 2)
+}
+
+
 ```
 
-* Influenza has more IL4, IL5, IL10 and GMCSF than CMV. 
+* Influenza has more IL5, IL10 and GMCSF than CMV. 
 
 ```{r,echo=FALSE}
 pca_virus <- dudi.pca(L[stim_type == 'virus', ], scan = FALSE, nf = 8)
@@ -219,6 +264,12 @@ par(mfrow = c(1, 2))
 s.class(pca_virus$li, factor(stim[sample_fac$stim][stim_type == 'virus']))
 s.arrow(pca_virus$c1)
 
+par(mfrow = c(2, 4))
+for (i in 1:8){
+  pval <- signif(kruskal.test(L[stim_type == 'virus', i], sample_fac$stim[stim_type == 'virus'])$p.value, 2)
+  boxplot(L[stim_type == 'virus',i] ~ factor(sample_fac$stim[stim_type == 'virus']), main = paste(colnames(L)[i], pval), xaxt = 'n')
+  axis(1, 1:2, c('cmv', 'inf'), las = 2)
+}
 
 
 
@@ -228,14 +279,15 @@ s.arrow(pca_virus$c1)
 
 ## Normalised to average number over all samples
 
-For every pair of markers, a matrix is constructed with ratio of (at least) double positive cells to the average. The log is taken so when a sample has more than average the value is positive, and when less than average the value is negative. Some combinations are very rare, so if the count is zero in more than 25% of samples, the combination is removed. 
+A matrix is now constructed with entries consisting of the logratio of the double positive frequency in each sample and the average double positive frequency, for each pair of markers. 
+The double positive frequency potentially includes events which are triple positive, quadruple positive etc. Some combinations are very rare, so if the count is zero in more than 25% of samples, the combination is removed. This matrix is now gives insight to the coexpression at the single cell level. 
 
 
 ```{r,echo=FALSE}
 
 
-cell_coexp <- make_cell_coexp(burt, markers[1:7])
-twoD_marginal <- make_twoD_marginal(burt, markers[1:7])
+cell_coexp <- make_cell_coexp(burt, Markers[1:7])
+twoD_marginal <- make_twoD_marginal(burt, Markers[1:7])
 
 
 L2 <- log(cell_coexp)
@@ -246,66 +298,29 @@ missing_vals <- apply(L2, 2, function(x) length(which(x == 0)))/length(burt)
 
 ```
 
-It might be naively expected that marker counts might drive the double positive marker counts. Specifically, it might be expected that markers which are coexpressed in the sample might also be coexpressed at the single cell level. If not, what is driving the single cell coexpression?
+## Connection between double positive frequencies and bulk frequencies, i.e. cell-level coexpression and sample-level coexpression
 
-To investigate this, first regress the double positive counts on the pair of total counts. For example, regress the IL17IL22 double positive counts on both IL17 total counts and IL22 total counts simultaneously. Then plot the $R^2$ value of this regression against the absolute value of correlation between the total marker counts (e.g. correlation between IL17 total counts and IL22 total counts). Correlation which is originally negative is plotted in black. 
+A 'null hypothesis' could be  that bulk frequencies  drive the double positive frequencies. Specifically, it could be expected that markers which are coexpressed at the sample level might also be coexpressed at the single cell level. What are the implications for exceptions to this hypothesis? Under what conditions is a cell subset double positive for two markers, when in general these markers aren't coexpressed in the sample?
 
-It can be seen that only 3 pairs are well-explained by their parent counts: IL17-IL22, IFNg-GMCSF, and IL4-IL5. These pairs correspond to the Thelper subsets. This is potentially a valuable method for filtering double positive counts when there is a larger number of markers and/or uncharacterised markers.   
+To investigate this, for each marker pair, first regress the double positive frequencies on the corresponding pair of bulk frequencies. For example, regress the IL17IL22 double positive frequencies on both IL17 bulk frequencies and IL22 bulk frequencies simultaneously. Then plot the $R^2$ value of this regression against the absolute value of correlation between the bulk frequencies (e.g. correlation between IL17 bulk frequencies and IL22 bulk frequencies). Correlation which is originally negative is plotted in black. 
+
+It can be seen that only 3 pairs are well-explained by their bulk frequencies: IL17-IL22, IFNg-GMCSF, and IL4-IL5. These pairs correspond to the Thelper subsets. This is potentially a valuable method for filtering marker combinations when there is a larger number of markers and/or uncharacterised markers.   
 
 ```{r,echo=FALSE}
 
-make_rsq <- function(sample_coexp, cell_coexp, markers) { # can be donor-centered versions if necessary
-  N <- ncol(L) - 1
-rsq <- lapply(1:(N - 1), function(i) lapply((i+1):N, function(j) {
-df <- data.frame(x1 = sample_coexp[, i], x2 = sample_coexp[, j], y = cell_coexp[, which(paste(colnames(sample_coexp)[j], colnames(sample_coexp)[i], sep= '_') == colnames(cell_coexp))])
-if (ncol(df) == 3) {
-lmodel <- lm(y ~ x1 + x2, df)
-summary(lmodel)$r.squared} else {0}
-} 
-)
-)
-
-rsq <- unlist(rsq)
-
-cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
-C <- cor(do.call(rbind, (by(L, factor(sample_fac$stim), colMeans))))
-cor_markers <- unlist(sapply(1:(N-1), function(i) C[(i+1):N, i]))
-names(cor_markers) <- cn
-
-return(list(rsq = rsq, cor = cor_markers))
-}
-
-rsq <- make_rsq(L, L2, markers[1:7])
-
-
+rsq <- make_rsq(L, L2, Markers[1:7])
 
 par(mfrow = c(1, 1))
-plot(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], pch = 16, cex = 1, type = 'n', xlab = '|correlation coefficient|', ylab = 'R square')
+plot(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], pch = 16, cex = 1,  type = 'n', xlab = '|correlation coefficient|', ylab = 'R square')
 text(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], names(rsq$cor)[missing_vals < 0.25], col = sign(rsq$cor)[missing_vals < 0.25] +2)
 abline(lm(rsq$rsq[missing_vals < 0.25] ~ abs(rsq$cor[missing_vals < 0.25])))
 ```
 
-Perform a BCA on the double positive count matrix. The three categories gut, lung and virus don't necessarily group together, in particular, CMV and influenza have been separated. 
+## Correlation between double positive frequencies
 
-```{r,echo=FALSE}
+Perform a BCA on the double positive frequency matrix. The three categories gut, lung and virus don't necessarily group together, in particular, CMV and influenza have been separated. 
 
-L2 <- L2[, missing_vals < 0.25]
-pca <- dudi.pca(L2, scan = FALSE, nf = 8)
-betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
-par(mfrow = c(1, 2))
-s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(betw$c1, clabel = 0.5)
-
-#coinertia analysis, not sure what it brings
-# pca1 <- dudi.pca(L, scan = FALSE, nf = 8)
-# bet <- bca(pca, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
-# bet1 <- bca(pca1, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
-# coin <- coinertia(bet, bet1, scannf = FALSE)
-# plot(coin)
-
-```
-
-Visually inspecting the correlation between all double positive counts, there are two strong groups and one weaker group. 
+Visually inspecting the correlation between all double positive frequencies, there are two strong groups and one weaker group. 
 
 * IL4-IL10, IL4-IL5, IFNg-IL4, IFNg-IL10, IL4-GMCSF (group 1)
 
@@ -316,14 +331,40 @@ Visually inspecting the correlation between all double positive counts, there ar
 
 ```{r,echo=FALSE}
 
-# cross correlation matrix
+L2 <- L2[, missing_vals < 0.25]
+pca <- dudi.pca(L2, scan = FALSE, nf = 8)
+betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+par(mfrow = c(1, 2))
+s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+s.arrow(betw$c1, clabel = 0.5)
+
 pheatmap(cor(L2))
 
+
+#coinertia analysis, not sure what it brings
+# pca1 <- dudi.pca(L, scan = FALSE, nf = 8)
+# bet <- bca(pca, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
+# bet1 <- bca(pca1, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
+# coin <- coinertia(bet, bet1, scannf = FALSE)
+# plot(coin)
+```
+
+Also make boxplots and kruskal-wallis test for the three stimulation types gut, lung and virus. 
+
+```{r,echo=FALSE}
+
+par(mfrow = c(3, 5))
+for (i in 1:14){
+  pval <- signif(kruskal.test(L2[, i], factor(stim_type))$p.value, 2)
+  boxplot(L2[, i] ~ factor(stim_type), main = paste(colnames(L2)[i], pval), las = 2)
+          }
 
 
 ```
 
-It is of interest to know the connection between double positive counts and total counts. To do this, calculate the cross-correlation matrix. The group structure of above is maintained, except interestingly, IFNg-GMSCF switches to group 1 (I don't know why yet). Then we can see:
+
+
+It is of interest to know the connection between double positive frequencies and bulk frequencies. To do this, calculate the cross-correlation matrix, e.g. between IFNg/IL17 double positive frequencies and IL10 bulk frequencies, and so on. The group structure of above is maintained, except interestingly, IFNg-GMSCF switches to group 1 (I don't know why yet). Then we can see:
 
 * group 1 is anticorrelated to IL22, IL17 and unstained cells, but no other marker strongly drives as a whole. This means that the fewer IL22, IL17 and unstained cells there are, the more these marker pairs can expand. 
 
@@ -355,7 +396,7 @@ pheatmap(cor(C))
 
 ## Normalised to expected number given total counts within sample
 
-We can make another double positive matrix, taking into account the contingency table structure. Suppose in one sample, there are 10% IL17 cells, and 12% IL17 cells. If the cells are double positive at random, then there would be (0.1)(0.12) = 1.2% cells. In fact, if there are actually 5% cells, then the value for that sample in the IL17-IL22 column would be $log(5/1.2, 2) = 2.06$. This means there are 4 times the number of IL17-IL22 cells than expected, given the total IL17 and IL22 counts. 
+We can make another double positive matrix, taking into account the contingency table structure. Suppose in one sample, there are 10% IL17 cells, and 12% IL17 cells. If the cells are double positive at random (i.e. no association between markers), then there would be (0.1)(0.12) = 1.2% cells. In fact, if there are actually 5% cells, then the value for that sample in the IL17-IL22 column would be $log(5/1.2, 2) = 2.06$. This means there are 4 times the number of IL17-IL22 cells than expected, given the total IL17 and IL22 frequencies. 
 
 First plot BCA. 
 
@@ -379,6 +420,20 @@ s.arrow(betw$c1, clabel = 0.5)
 
 
 ```
+
+Boxplot and kruskal-wallis test for three stimulation types gut, lung and virus. 
+
+```{r,echo=FALSE}
+
+par(mfrow = c(3, 5))
+for (i in 1:14){
+  pval <- signif(kruskal.test(L3[, i], factor(stim_type))$p.value, 2)
+  boxplot(L3[, i] ~ factor(stim_type), main = paste(colnames(L3)[i], pval), las = 2)
+          }
+
+
+```
+
 
 Turn straight to the cross-correlation matrix
 
@@ -409,7 +464,11 @@ pheatmap(cor(C))
 ```
 
 
+# Note
 
+Kruskal-wallis tests show that all markers have at least one stochastically dominant stimulation subtype for bulk frequencies. This suggests that bulk frequencies alone are a very good fingerprint of immune response. 
+
+Interestingly, there isn't such a strong difference between stimulation subtypes for double positive frequencies. (and virtually none for contingency table expected values). This is because double positive frequencies are not independent of the bulk frequencies. For example, 5% double positive frequency in two different samples can mean different underlying biological processes depending on whether the bulk frequencies are 10% or 20%. 
 
 
 
