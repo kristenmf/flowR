@@ -39,6 +39,7 @@ make_sample_coexp <- function(burt) {
   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
   unst <- sapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
   unst <- mapply(sum, unst)
+  unst[unst == 0] <- 1
 
   expression_donor <-
     lapply(burt, function(.x) {
