@@ -1,6 +1,7 @@
 #' Calculates common breaks of all datasets for each channel
 #' @param X list of matrices, rows are events, columns are parameters
 #' @return list of intervals for each parameter
+#' @export
 make_breaks <- function(X) {
   lapply(1:ncol(X[[1]]), function(i) {
     x <- unlist(mapply(function(x) x[, i], X))
@@ -14,6 +15,7 @@ make_breaks <- function(X) {
 #' @param breaks, output from make_breaks or custom if desired.
 #' @param markers vector of character strings indicating marker names, in same order as they appear in the columns of the matrices in X
 #' @return list of dataframes, with markers coded as 1 for 'positive' and 0 for 'negative', and additional column 'counts' indicating the proportion of events with that marker combination. Only combinations with non-zero proportions are included. Column 'which' gives a unique index to each sample.
+#' @export
 make_burt <- function(X, breaks, markers) {
   tmp1 <- lapply(1:length(X), function(i) {
     x <- mapply(function(x, y) cut(x, y, FALSE, TRUE), X[[i]], breaks)
@@ -30,6 +32,7 @@ make_burt <- function(X, breaks, markers) {
 #' Finds the ratio of marker frequency in a sample to average marker frequency. This is counting 'total positive' for each marker, e.g. the bulk behaviour. Events may be double-counted, e.g. cells which are IL17-IL22 double positive are counted twice in IL17 total counts and IL22 total counts.
 #' @param burt , output of make_burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's total marker frequency to the average total marker frequency (averaged over all samples). Columns are markers, additionally the final column is the number of unstained cells. When a marker combination doesn't appear in the sample, a value of 1 is given.
+#' @export
 make_sample_coexp <- function(burt) {
   burt_all <- do.call(rbind, burt)
   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
@@ -50,6 +53,7 @@ make_sample_coexp <- function(burt) {
 #' @param burt output from make_burt
 #' @param markers vector of character strings, marker names in same order as they appear in columns of burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's  frequency to the average  frequency (averaged over all samples). Columns are marker pairs. When a marker combination doesn't appear in the sample, a value of 1 is given.
+#' @export
 make_cell_coexp <- function(burt, markers) {
 
   burt_all <- do.call(rbind, burt)
@@ -85,6 +89,7 @@ make_cell_coexp <- function(burt, markers) {
 #' @param burt output from make_burt
 #' @param markers vector of character strings, marker names in same order as they appear in columns of burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's  frequency to the expected frequency given no association between the markers. Columns are marker pairs.
+#' @export
 make_twoD_marginal <- function(burt, markers) {
 
   N <- ncol(burt[[1]]) - 2
@@ -113,6 +118,7 @@ make_twoD_marginal <- function(burt, markers) {
 #' @param cell_coexp output of make_cell_coexp
 #' @param markers vector of character strings, marker names in same order as they appear in columns of burt
 #' @return A dataframe. For each pair of markers: R squared value of multiple regression of cell coexpression frequency on both the total frequencies. Correlation between both total frequencies.
+#' @export
 make_rsq <- function(sample_coexp, cell_coexp, markers) { # can be donor-centered versions if necessary
   N <- ncol(L) - 1
   rsq <- lapply(1:(N - 1), function(i) lapply((i+1):N, function(j) {
@@ -138,6 +144,7 @@ make_rsq <- function(sample_coexp, cell_coexp, markers) { # can be donor-centere
 #' @param sample_coexp output from make_sample_coexp
 #' @param cell_coexp output from make_cell_coexp
 #' @return Matrix of cross-correlation values. Rows correspond to total frequencies, columns correspond to cell coexpression frequencies.
+#' @export
 make_cross_correlation <- function(sample_coexp, cell_coexp) {
   cor(cbind(sample_coexp, cell_coexp))[1:ncol(sample_coexp), (ncol(sample_coexp)+1):(ncol(sample_coexp) + ncol(cell_coexp))]
 }

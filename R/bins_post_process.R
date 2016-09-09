@@ -5,6 +5,7 @@
 #' @param  sample_fac  factor indicating which sample type each donor originated from, length(sample_fac) == nrow(D)
 #' @return bins data matrices for each bin, combined over all donors
 #' @return binnames The bin names
+#' @export
 get_bins_lineplot <- function(data_binned, w, D, sample_fac) {
 #   data_binned <- model_rebin[[5]][[1]]
 #   w <- 0.8

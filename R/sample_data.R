@@ -6,6 +6,7 @@
 #' @return sample_fac a factor to split combined data matrix into individuals
 #' @return D combined sampled uncompensated matrix
 #' @return D_comp combined sampled compensated matrix
+#' @export
 sample_data <- function(Data, D_comp, S) {
   samples <- mapply(function(x) if (nrow(x) < S) {1:nrow(x)} else {sample(nrow(x), S)}, Data, SIMPLIFY = FALSE)
   sample_fac <- rep(1:length(Data), mapply(length, samples))

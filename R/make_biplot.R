@@ -4,6 +4,7 @@
 #' @param dim The number of dimensions to retain
 #' @return F Cartesian coordinates of individuals. Columns correspond to components
 #' @return G Cartesian coordinates of variables. Columns correspond to components. Generally represented as rays emanating from origin.
+#' @export
 make_biplot <- function(s, alpha, dim) {
   F <- s$u[, 1:dim] * matrix(rep(s$d[1:dim], nrow(s$u)), byrow = TRUE, ncol = dim)^alpha
   G <- s$v[, 1:dim] * matrix(rep(s$d[1:dim], nrow(s$v)), byrow = TRUE, ncol = dim)^(1-alpha)

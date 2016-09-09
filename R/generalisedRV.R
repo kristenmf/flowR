@@ -25,6 +25,7 @@ create.G <- function(n,D)
 #' @param GX matrix
 #' @param GY matrix
 #' @return RV coefficient
+#' @export
 GRV <- function(GX,GY)
 {
   return(trace.matrix(GX%*%GY)/(norm.matrix(GX)*norm.matrix(GY)))
