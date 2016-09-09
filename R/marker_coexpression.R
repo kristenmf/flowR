@@ -34,9 +34,11 @@ make_burt <- function(X, breaks, markers) {
 #' @return A matrix, where each row is a vector of the ratio of a sample's total marker frequency to the average total marker frequency (averaged over all samples). Columns are markers, additionally the final column is the number of unstained cells. When a marker combination doesn't appear in the sample, a value of 1 is given.
 #' @export
 make_sample_coexp <- function(burt) {
+  burt <- mapply(function(x) rbind(x, c(rep(1, ncol(x) - 2), 0, x$which[1])), burt, SIMPLIFY = FALSE)
   burt_all <- do.call(rbind, burt)
   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
-  unst <- sapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == ncol(burt_all), 'counts'])
+  unst <- sapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
+  unst <- mapply(sum, unst)
 
   expression_donor <-
     lapply(burt, function(.x) {
@@ -47,6 +49,7 @@ make_sample_coexp <- function(burt) {
   expression_donor <- cbind(expression_donor, unst)
   return(expression_donor)
 }
+
 
 
 #' For every possible pair of markers, find the ratio of the frequency in each sample to the average frequency over all samples.
