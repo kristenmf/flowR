@@ -18,7 +18,7 @@ do_plots(bins, dir, markers, threshold, y1, y2)
 \item{y1, }{y2  vertical plot limits}
 }
 \value{
-a plot in the desired direction (png format)
+a plot in the desired directory (png format)
 }
 \description{
 makes lineplots

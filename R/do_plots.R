@@ -4,7 +4,7 @@
 #' @param markers  vector of strings indicating the markers
 #' @param threshold  the minimum sized bin that should be plotted
 #' @param y1, y2  vertical plot limits
-#' @return a plot in the desired direction (png format)
+#' @return a plot in the desired directory (png format)
 do_plots <- function(bins, dir, markers, threshold, y1, y2) {
   for (i in 1:length(bins[[1]])) {
     tmp <- bins[[1]][[i]]

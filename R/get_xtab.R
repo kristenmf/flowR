@@ -1,6 +1,6 @@
 #' After binning the data, make a table with the nearly empty bins combined into a 'leftover bin'. often dramatically reduces size of the table without much information loss. 
 #' @param data_binned output of make_bins
-#' @param w the 'vacancy rate', a number between 0 and 1. The final table will have no column (bin) with a greater proportion than w of donors with zero events in that bin. 
+#' @param w the 'vacancy rate', a number between 0 and 1. The maximum proportion of zero counts (over donors) allowed in a bin. All bins with a higher vacancy rate will be combined into a 'leftover bin'.  
 #' @param C The row names - donor sample type
 #' @return The reduced data matrix. Each row (donor) sums to one. The first column is the number of 'leftover' events, i.e. the events that don't fit into the bins that are common to most samples. 
 get_xtab <- function(data_binned, w, C) {

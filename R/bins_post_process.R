@@ -2,11 +2,10 @@
 #' @param data_binned  output of make_bins
 #' @param w  proportion of zero counts (over samples) allowed in a bin
 #' @param  D  the matrix to split. Probably compensated, so you can see what the markers are doing
-#' @param  sample_fac  index of which sample each event originated from, length(sample_fac) == nrow(D)
-#' @param rebin Historical, needs to be removed.
-#' @return bins data matrices for each bin, combined over all samples
+#' @param  sample_fac  factor indicating which sample type each donor originated from, length(sample_fac) == nrow(D)
+#' @return bins data matrices for each bin, combined over all donors
 #' @return binnames The bin names
-get_bins_lineplot <- function(data_binned, w, D, sample_fac, rebin) {
+get_bins_lineplot <- function(data_binned, w, D, sample_fac) {
 #   data_binned <- model_rebin[[5]][[1]]
 #   w <- 0.8
 #   sample_fac <- D$sample_fac
@@ -19,12 +18,7 @@ get_bins_lineplot <- function(data_binned, w, D, sample_fac, rebin) {
 
   grid <- data_binned$grid
   x <- split(data.frame(D), factor(sample_fac))
-  if (!rebin) {
-    data_bins <- mapply(function(x, y) split(x, y), x, grid, SIMPLIFY = FALSE)
-  } else {
-    data_bins <- mapply(function(x, y) split(x, y$combined), x, grid, SIMPLIFY = FALSE)
-  }
-
+  data_bins <- mapply(function(x, y) split(x, y), x, grid, SIMPLIFY = FALSE)
   data_bins <- mapply(function(x) x[which_empty], data_bins, SIMPLIFY = FALSE)
 
   combine_bins <- lapply(1:length(which_empty), function(j) do.call(rbind, lapply(1:length(data_bins), function(i) data_bins[[i]][[j]])))
@@ -68,15 +62,15 @@ CQ <- function(C, seq) {
   return(L)
 }
 
-P_mtx <- function(mtx, q) {
-  mtx_q <- mtx_thres(mtx, q)
-  diag(mtx) <- 0
-  d <- colSums(mtx_q)
-  w <- which(d > 0)
-  D <- diag(1/d[w])
-  P <- D %*% mtx_q[w, w]
-  return(list(d = d, P = P))
-}
+# P_mtx <- function(mtx, q) {
+#   mtx_q <- mtx_thres(mtx, q)
+#   diag(mtx) <- 0
+#   d <- colSums(mtx_q)
+#   w <- which(d > 0)
+#   D <- diag(1/d[w])
+#   P <- D %*% mtx_q[w, w]
+#   return(list(d = d, P = P))
+# }
 
 
 

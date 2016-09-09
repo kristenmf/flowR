@@ -9,10 +9,10 @@ outlier_pretrim(Data, lim1, lim2)
 \arguments{
 \item{Data}{A list of data matrices}
 
-\item{lim1, }{lim2 The upper and lower limits for trimming, expressed as percentiles. Computed column-wise}
+\item{lim1, }{lim2 The upper and lower limits for trimming on the interval (0, 1) (quantiles)}
 }
 \value{
-The list of matrices is combined into one single matrix. Then rows are filtered out if at least one value falls outside the bounds set by lim1, lim2. The filted data matrix is returned.
+The list of matrices is combined into one single matrix. Trimming is performed for each column. Rows are filtered out if at least one value falls outside the bounds set by lim1, lim2. The filted data matrix is returned.
 }
 \description{
 trim the data before starting

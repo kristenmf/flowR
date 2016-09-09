@@ -131,7 +131,7 @@ make_rsq <- function(sample_coexp, cell_coexp, markers) { # can be donor-centere
   cor_markers <- unlist(sapply(1:(N-1), function(i) C[(i+1):N, i]))
   names(cor_markers) <- cn
 
-  return(data.frame(rsq = rsq, cor = cor_markers))
+  return(list(rsq = rsq, cor = cor_markers))
 }
 
 #' Finds the cross-correlation between total frequencies and cell coexpression.

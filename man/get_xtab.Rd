@@ -9,7 +9,7 @@ get_xtab(data_binned, w, C)
 \arguments{
 \item{data_binned}{output of make_bins}
 
-\item{w}{the 'vacancy rate', a number between 0 and 1. The final table will have no column (bin) with a greater proportion than w of donors with zero events in that bin.}
+\item{w}{the 'vacancy rate', a number between 0 and 1. The maximum proportion of zero counts (over donors) allowed in a bin. All bins with a higher vacancy rate will be combined into a 'leftover bin'.}
 
 \item{C}{The row names - donor sample type}
 }

@@ -2,7 +2,7 @@
 % Please edit documentation in R/make_grid_index.R
 \name{make_grid_index}
 \alias{make_grid_index}
-\title{This takes a combined data matrix (generally dimension has already been reduced) which is gridded by spliting each component into l bins of equal width (defined by minimum and maximum of each component. Thus it is generally a good idea to trim outliers). Helper function to be used downstream}
+\title{This takes a combined data matrix (generally dimension has already been reduced) which is gridded by spliting each component into l bins of equal width (defined by minimum and maximum of each component. Thus it is generally a good idea to trim outliers). Helper function for make_grid, not generally used on its own.}
 \usage{
 make_grid_index(d, l)
 }
@@ -15,6 +15,6 @@ make_grid_index(d, l)
 a factors with which to split d
 }
 \description{
-This takes a combined data matrix (generally dimension has already been reduced) which is gridded by spliting each component into l bins of equal width (defined by minimum and maximum of each component. Thus it is generally a good idea to trim outliers). Helper function to be used downstream
+This takes a combined data matrix (generally dimension has already been reduced) which is gridded by spliting each component into l bins of equal width (defined by minimum and maximum of each component. Thus it is generally a good idea to trim outliers). Helper function for make_grid, not generally used on its own.
 }
 

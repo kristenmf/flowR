@@ -1,13 +1,13 @@
 Package: flowR
-Title: What the Package Does (one line, title case)
-Version: 0.0.0.9000
-Authors@R: person("First", "Last", email = "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
+Title: Flow Cytometry and Single Cell Analysis
+Version: 0.1
+Authors@R: person("Kristen", "Feher", email = "kristen.feher@drfz.de", role = c("aut", "cre"))
+Description: A collection of functions I use for flow cytometry data analysis
 Depends:
     R (>= 3.2.0)
 License: What license is it under?
 LazyData: true
-Imports: flowCore, ggplot2
+Imports: flowCore, ggplot2, plyr
 RoxygenNote: 5.0.1
 Suggests: knitr,
     rmarkdown

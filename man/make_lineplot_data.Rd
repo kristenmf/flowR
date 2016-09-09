@@ -3,7 +3,7 @@
 \name{make_lineplot_data}
 \alias{make_lineplot_data}
 \title{puts a data matrix (compensated, uncompensated) into a format for lineplots
-ncol(X) == length(markers)}
+ncol(X) == length(markers). Hard-coded Convenience function for reshaping.}
 \usage{
 make_lineplot_data(X, markers)
 }
@@ -17,6 +17,6 @@ a data frame for making lineplots/parallel coordinate plots
 }
 \description{
 puts a data matrix (compensated, uncompensated) into a format for lineplots
-ncol(X) == length(markers)
+ncol(X) == length(markers). Hard-coded Convenience function for reshaping.
 }
 

@@ -1,5 +1,5 @@
 #' puts a data matrix (compensated, uncompensated) into a format for lineplots
-#' ncol(X) == length(markers)
+#' ncol(X) == length(markers). Hard-coded Convenience function for reshaping. 
 #' @param X data matrix with observations/events as rows, features/channels as columns
 #' @param markers The column/channel names, e.g. the biomarkers used
 #' @return a data frame for making lineplots/parallel coordinate plots

@@ -9,3 +9,13 @@ data_lr <- scale(log(data_lr))
 return(data_lr)
 }
 
+#' replaces zero with a small value
+#' @param X matrix of compositions
+#' @return matrix of compositions, with zero replaced by a small value and rescaled
+replace_zero <- function(X) {
+  X[X == 0] <- min(X[X > 0])/100
+  X <- t(apply(X, 1, function(x) x/sum(x)))
+  return(X)
+}
+
+
