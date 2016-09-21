@@ -153,6 +153,27 @@ make_cross_correlation <- function(sample_coexp, cell_coexp) {
   cor(cbind(sample_coexp, cell_coexp))[1:ncol(sample_coexp), (ncol(sample_coexp)+1):(ncol(sample_coexp) + ncol(cell_coexp))]
 }
 
+#' Finds the matrix residual after singular value decomposition components are removed.
+#' @param X matrix
+#' @param k Vector of components to be removed
+#' @return Residual vector
+#' @export
+svd_residuals <- function(X, k) {
+  s <- svd(X)
+  u <- s$u
+  u[, k] <- 0
+  v <- s$v
+  v[, k] <- 0
+  d <- s$d
+  d[k] <- 0
+  s1 <- u %*% diag(d) %*% t(v)
+  colnames(s1) <- colnames(X)
+  rownames(s1) <- rownames(X)
+  return(s1)
+
+}
+
+
 
 
 
