@@ -33,7 +33,8 @@ library(igraph)
 library(glasso)
 library(plyr)
 #library(dunn.text)
-devtools::load_all(".")
+#devtools::load_all(".")
+library(flowR)
 
 # load data
 
@@ -78,6 +79,7 @@ sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
 stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
 stim_type <- rep(c('lung', 'gut', 'lung', 'lung', 'virus', 'gut', 'gut', 'virus'), 8)
 
+
 ```
 
 
@@ -101,18 +103,24 @@ Some basic statistics: proportion of at least single positive, at least double p
 ```{r,echo=FALSE}
 
 burt_all <- do.call(rbind, burt)
-apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+t1 <- apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+t1
        
        
 # at least double positive 
-apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 8 & x == 2])/sum(burt_all$counts))
+t2 <- apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 8 & x == 2])/sum(burt_all$counts))
+t2
 
 # at least triple positive 
-apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 9 & x == 2])/sum(burt_all$counts))
+t3 <- apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 9 & x == 2])/sum(burt_all$counts))
+t3
 
 # at least quadruple positive 
-apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 10 & x == 2])/sum(burt_all$counts))
+t4 <- apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 10 & x == 2])/sum(burt_all$counts))
+t4
 
+# library(xtable)
+# xtable(cbind(t1, t2, t3, t4), display = rep('e', 5))
 
 ```
 
@@ -152,6 +160,8 @@ pheatmap(summary_mtx)
 ```
 
 
+## Between-component analysis on bulk frequency matrix
+
 Perform a between-component analysis (BCA) on the bulk matrix. This is to visualise the relationship between stimulation centres - there could be addtional correlation within each stimulation that makes this relationship less clear. We proceed with a descriptive/exploratory analysis. 
 
 * IL17 and IL22 are correlated. This is consistent with Th17 subset. 
@@ -176,11 +186,76 @@ colnames(L) <- c(Markers[-8], 'unst')
 pca <- dudi.pca(L, scan = FALSE, nf = 8)
 betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 6)
 
+# export figure for paper
+#pdf('Figures/bulk_bca.pdf', height = 6, width = 10)
 par(mfrow = c(1, 2))
 s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(betw$c1)
+s.arrow(betw$c1, clabel = 0.6)
+#dev.off()
 
-#dunn.test(L[, 7], factor(stim_type), kw = TRUE, label = TRUE)
+```
+
+## Singular value decomposition of bulk frequency matrix
+
+Dissect pathogen specific contributions in a systematic way using singular value decomposition. 
+
+The first split of markers is {IL4, IFNg, IL5, GMCSF, IL10} vs. {unst, IL22, IL17}. These two groups are roughly diametrically opposed to each, i.e when a donor has high counts in one group it is likely (but not certain) to have low counts in the other group. 
+
+We can use the ranks of the donor loadings to understand how they contribute to the marker groups. Ecoli and influenza are most opposed. This means, when one pathogen has high counts in one marker group, the other pathogen is likely to have low counts (and vice versa for the other marker group). In this dataset, E.coli overall has low counts in group1 and high counts in group 2. Influenza has high counts in group 1 and low counts in group 2. 
+
+Furthermore, CMV joins influenza and candida joins E.coli, making this direction a separation between gut and virus. 
+
+```{r,echo=FALSE}
+L_1 <- scale(L)
+rownames(L_1) <- stim[sample_fac$stim]
+S <- svd(L_1)
+S1 <- svd_residuals(L_1, 1)
+S2 <- svd_residuals(L_1, 1:2)
+
+# export figure
+# png('Figures/bulk_heatmap.png', height = 400, width = 700)
+pheatmap(L_1[order(S$u[, 1]), order(S$v[, 1])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 1')
+# dev.off()
+
+o <- order(by(S$u[, 1], factor(sample_fac$stim), median))
+# export figure
+# pdf('Figures/bulk_boxplot_1st.pdf')
+par(mfrow = c(1, 1))
+boxplot(S$u[, 1] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE), ylab = 'loading', main = 'Bulk frequency 1st component' )
+# dev.off()
+
+
+```
+
+The first singular vectors are only an approximation, now we look for the next strongest patterns. The largest deviation from the first approximation is given by {IFNg, GMCSF} vs. {IL17, IL4, unst, IL5, IL10}. IL22 is indeterminate. 
+
+Now the three lung pathogens dominate one end of this direction, by having higher counts in group 2. At the other end, Ecoli and CMV come together, seemingly contradicting the first approximation. But what this means is while CMV and E.coli are strongly separated by IL22 and IL17, and IL4, IL5, GMCSF, they deviate because of IFNg and IL10. In contrast, Influenza and candida are in the middle. 
+
+```{r,echo=FALSE}
+
+# export figure
+# png('Figures/bulkheatmap2nd.png', height = 400, width = 700)
+pheatmap(S1[order(S$u[, 2]), order(S$v[, 2])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'Bulk frequency component 2')
+# dev.off()
+
+o <- order(by(S$u[, 2], factor(sample_fac$stim), median))
+# export figure
+# pdf('Figures/bulk_boxplot_2nd.pdf')
+par(mfrow = c(1, 1))
+boxplot(S$u[, 2] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE), main = 'Bulk frequency component 2', ylab = 'loadings')
+# dev.off()
+
+```
+
+
+Here, gut and lung are opposing each other because of GMCSF and unstained. 
+
+```{r,echo=FALSE}
+pheatmap(S2[order(S$u[, 3]), order(S$v[, 3])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'Bulk frequency component 3')
+o <- order(by(S$u[, 3], factor(sample_fac$stim), median))
+par(mfrow = c(1, 1))
+boxplot(rank(S$u[, 3]) ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE) ,main = 'Bulk frequency component 3', ylab = 'loadings')
+
 
 ```
 
@@ -211,7 +286,24 @@ s.arrow(betw$c1)
 
 ```
 
+## Marker correlation network
 
+The correlation between marker frequencies can alternatively be represented as network if you like that sort of thing. It has basically the same information as the righthand plot above. Orange indicates positive correlation, blue represents negative correlation. The thickness of the line indicates the strength of association. 
+
+
+```{r,echo=FALSE}
+pc <- glasso(cor(L), rho = 0.1)$wi
+colnames(pc) <- colnames(L)
+rownames(pc) <- colnames(L)
+
+G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
+E(G)$col <- 1
+E(G)$col[E(G)$weight > 0] <- 2
+E(G)$width <- abs(E(G)$weight)
+plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
+```
+
+## Differences between pathogen type: gut, lung and virus
 
 Boxplot and kruskal-wallis test (p value displayed in header of each plot) of each marker with respect to lung, gut and virus stimulation types. Not only does it confirm correlation structure above (which is calculated directly on the eight stimulation types) but it demonstrates a general pattern for the three stimulation types. 
 
@@ -230,22 +322,8 @@ for (i in 1:8){
 
 ```
 
-The correlation between marker frequencies can alternatively be represented as network if you like that sort of thing. It has basically the same information as the righthand plot above. Orange indicates positive correlation, blue represents negative correlation. The thickness of the line indicates the strength of association. 
 
-
-```{r,echo=FALSE}
-pc <- glasso(cor(L), rho = 0.1)$wi
-colnames(pc) <- colnames(L)
-rownames(pc) <- colnames(L)
-
-G <- graph_from_adjacency_matrix(pc, mode = 'undirected', weighted = TRUE, diag = FALSE)
-E(G)$col <- 1
-E(G)$col[E(G)$weight > 0] <- 2
-E(G)$width <- abs(E(G)$weight)
-plot(G, edge.color = E(G)$col, edge.width = E(G)$width*15)
-```
-
-It is also possible to look at differences within the three broad categories gut, lung and virus. 
+It is also possible to look the BCA of the three categories gut, lung and virus. 
 
 * C.leptum and candida both have more frequent IL4 and IL10 than E.coli. 
 * Candida has more frequent GMCSF and less frequent IL5 than C.leptum. 
@@ -341,25 +419,26 @@ It can be seen that only 3 pairs are well-explained by their bulk frequencies: I
 
 rsq <- make_rsq(L, L2, Markers[1:7])
 
+# pdf('Figures/rsq_cor.pdf')
 par(mfrow = c(1, 1))
 plot(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], pch = 16, cex = 1,  type = 'n', xlab = '|correlation coefficient|', ylab = 'R square')
 text(abs(rsq$cor)[missing_vals < 0.25], rsq$rsq[missing_vals < 0.25], names(rsq$cor)[missing_vals < 0.25], col = sign(rsq$cor)[missing_vals < 0.25] +2)
 abline(lm(rsq$rsq[missing_vals < 0.25] ~ abs(rsq$cor[missing_vals < 0.25])))
+# dev.off()
+
 ```
 
-## Correlation between double positive frequencies
+## BCA of  double positive frequency matrix
 
 Perform a BCA on the double positive frequency matrix. The three categories gut, lung and virus don't necessarily group together, in particular, CMV and influenza have been separated. 
 
 Visually inspecting the correlation between all double positive frequencies, there are two strong groups and one weaker group. 
 
-* __group 1__ IL5-IL4, IFNg-IL10, IFNg-IL4, IL4-IL10, IL4-GMCSF 
+* __group 1__ IL5-IL4, IFNg-IL10, IFNg-IL4, IL4-IL10, IL4-GMCSF, IFNg-GMCSF, GMCSF-IL10
 
 * __group 2__ IL17-IL22, IFNg-IL22, IL17-IFNg 
 
 * __group 3__ IL22-IL10, GMCSF-IL22, IL17-IL10, IL17-GMCSF 
-
-* __group 4__ IFNg-GMCSF, GMCSF-IL10 
 
 
 ```{r,echo=FALSE}
@@ -371,91 +450,14 @@ par(mfrow = c(1, 2))
 s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
 s.arrow(betw$c1, clabel = 0.5)
 
-o <- c(7, 14, 8, 6, 11, 5, 1, 2, 10, 13, 4, 9, 3, 12)
-# par(mfrow = c(1, 1))
-# plot(1:14, betw$c1[, 3][c(7, 14, 8, 6, 11, 5, 1, 2, 10, 13, 4, 9, 3, 12)], type = 'n')
-# text(1:14, betw$c1[, 3][c(7, 14, 8, 6, 11, 5, 1, 2, 10, 13, 4, 9, 3, 12)], labels = colnames(L2)[c(7, 14, 8, 6, 11, 5, 1, 2, 10, 13, 4, 9, 3, 12)], cex = 0.5, col = c(1, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 4, 4, 4))
-
-pheatmap(cor(L2)[o, o], cluster_rows = FALSE, cluster_cols = FALSE)
 ```
 
-These four groups of double positive combinations should be fairly homogenous and therefore very well described by a single principal component - i.e. it should be possible to give the stimulations a straightforward ordering to describe the relative frequencies. 
-
-__Group 1__
-
-* Mite, influenza have higher frequencies. Candida, ecoli have lowest frequencies. Mite has more IL5-IL4 and IL4-IL10 than influenza, and less frequent IFNg-IL10 .
-
-```{r,echo=FALSE}
-
-pca <- dudi.pca(L2[, c(3, 13, 12, 4, 9)], scan = FALSE, nf = 8)
-betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
-par(mfrow = c(1, 2))
-s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(betw$c1, clabel = 0.5)
-```
-
-__group 2__
-
-* Gut have higher frequencies and mite, CMV have lowest frequencies. Candida has highest IL17-IL22 frequencies, Ecoli has highest IFNg-IL22 frequencies. 
-
-
-```{r,echo=FALSE}
-pca <- dudi.pca(L2[, c(8, 7, 14)], scan = FALSE, nf = 8)
-betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
-par(mfrow = c(1, 2))
-s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(betw$c1, clabel = 0.5)
-```
-
-__group 3__
-
-* Candida, C.leptum have highest frequencies. Ecoli, CMV have lowest frequencies. 
-
-```{r,echo=FALSE}
-pca <- dudi.pca(L2[, c(11, 6, 5, 1)], scan = FALSE, nf = 8)
-betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
-par(mfrow = c(1, 2))
-s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(betw$c1, clabel = 0.5)
-```
-
-__group 4__
-
-* Influenza has highest frequency. birchgrass has lowest frequency. 
-
-```{r,echo=FALSE}
-pca <- dudi.pca(L2[, c(2, 10)], scan = FALSE, nf = 8)
-par(mfrow = c(1, 2))
-s.class(pca$li, factor(stim[sample_fac$stim]), col = sample_fac$stim)
-s.arrow(pca$c1, clabel = 0.5)
-
-
-#coinertia analysis, not sure what it brings
-# pca1 <- dudi.pca(L, scan = FALSE, nf = 8)
-# bet <- bca(pca, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
-# bet1 <- bca(pca1, scan = FALSE, nf = 8, fac = factor(stim[sample_fac$stim]))
-# coin <- coinertia(bet, bet1, scannf = FALSE)
-# plot(coin)
-```
-
-Also make boxplots and kruskal-wallis test for the three stimulation types gut, lung and virus. 
-
-```{r,echo=FALSE}
-
-par(mfrow = c(3, 5))
-for (i in 1:14){
-  pval <- signif(kruskal.test(L2[, i], factor(stim_type))$p.value, 2)
-  boxplot(L2[, i] ~ factor(stim_type), main = paste(colnames(L2)[i], pval), las = 2)
-          }
-
-
-```
 
 ## Cross correlation between bulk frequencies and double positive frequencies
 
 It is of interest to know the connection between double positive frequencies and bulk frequencies. In particular, even though there are a large number of possible double positive frequencies, they are constrained to 4 processes in this particular dataset. The double positive groups are also strongly associated with the bulk frequencies in a very constrained way. 
 
-* __group 1__ (IL5-IL4, IFNg-IL10, IFNg-IL4, IL4-IL10, IL4-GMCSF)
+* __group 1__ (IL5-IL4, IFNg-IL10, IFNg-IL4, IL4-IL10, IL4-GMCSF, IFNg-GMCSF, GMCSF-IL10)
 + anticorrelated to unstained, IL22, IL17
 + correlated to IL4, 
 + IL4-IL5  strongly associated with IL5: IL5 only occurs with IL4 but IL4 occurs with other markers (IL10, IFNg, GMCSF). IL4 with IL17 or IL22 doesn't occur (or very rarely)
@@ -470,42 +472,155 @@ It is of interest to know the connection between double positive frequencies and
 + anticorrelated to IFNg
 + non of these marker pairs have correlated bulk frequencies
 
-* __group 4__ (IFNg-GMCSF, GMCSF-IL10)
-+ correlated to GMCSF
-+ anticorrelated to unstained
-+  IFNg-GMCSF double positive frequency strongly associated with GMCSF bulk frequency
-
 * __miscellaneous__
 + Connection of IL17-IL22 double positive to group 3: anticorrelated to IFNg
 
 
 ```{r,echo=FALSE}
-# It is of interest to know the connection between double positive frequencies and bulk frequencies. To do this, calculate the cross-correlation matrix, e.g. between IFNg/IL17 double positive frequencies and IL10 bulk frequencies, and so on. The group structure of above is maintained, except interestingly, IFNg-GMSCF switches to group 1 (I don't know why yet). Then we can see:
-# 
-# * group 1 is anticorrelated to IL22, IL17 and unstained cells, but no other marker strongly drives as a whole. This means that the fewer IL22, IL17 and unstained cells there are, the more these marker pairs can expand. 
-# 
-# * group 2 is strongly correlated to IL22 and IL17, and anti-correlated to IL4, IL5 and IL10. We have already seen that IL17-IL22 is well explained by its parent counts, and is strongly negatively correlated with IFNg. However, IFNg-IL22 and IL17-IFNg aren't strongly anticorrelated with IFNg. This means that these marker pairs can expand in the absence of IL4, IL5, IL10. But IFNg-IL22 and IL17-IFNg require IFNg. So what drives these pairs, IL17 or IFNg?
-# 
-# * group 3 (minus IFNg-GMCSF) is anti-correlated to IFNg, with the exception of GMCSF-IL10, i.e. they can expand in the absence of IFNg. 
-# 
-# * what is the most useful way to pick out stimulations that contribute to this? I don't simply want to make an endless list. 
-# 
-# * IFNg-GMCSF and GMCSF-IL10 seem to be slightly curious combinations. They don't fit really well with other marker pairs. 
 
 
 #C <- cor(cbind(L, L2))[1:8, 9:22]
 C <- make_cross_correlation(L, L2)
-pheatmap(C[, o], cluster_cols = FALSE)
 
+S <- svd(C)
+S1 <- svd_residuals(C, 1)
+# png('Figures/cross_cor_1.png', height = 400, width = 700)
+pheatmap(C[order(S$u[, 1]), order(S$v[, 1])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'cross correlation, component 1')
+# dev.off()
+ 
+# png('Figures/cross_cor_2.png', height = 700, width= 1000)
+pheatmap(S1[order(S$u[, 2]), order(S$v[, 2])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'cross correlation, component 2')
+# dev.off()
 
 
 ```
 
-Just for interest, here is the correlation matrix of the above cross-correlation matrix. It is quite similar to the original correlation matrix above in terms of group structure, except for IFNg-GMCSF and GMCSF-IL10 which are weakly in group 1. GMCSF-IL10 somehow maintains a foot in group 3. 
+
+
+These three groups of double positive combinations should be fairly homogenous and therefore very well described by a single principal component - i.e. it should be possible to give the stimulations a straightforward ordering to describe the relative frequencies. 
+
+__Group 1__
+
+* Mite, influenza have higher frequencies. Candida, ecoli have lowest frequencies. Mite has more IL5-IL4 and IL4-IL10 than influenza, and less frequent IFNg-IL10 .
 
 ```{r,echo=FALSE}
-pheatmap(cor(C)[o, o], cluster_rows = FALSE, cluster_cols = FALSE)
+
+
+L2_1 <- scale(L2[, c(3, 13, 12, 4, 9, 2, 10)])
+rownames(L2_1) <- stim[sample_fac$stim]
+S <- svd(L2_1)
+S1 <- svd_residuals(L2_1, 1)
+
+# pca <- dudi.pca(L2[, c(3, 13, 12, 4, 9, 2, 10)], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1, clabel = 0.5)
+
+
+
+# png('Figures/doublepos_1_comp1.png', height = 400, width = 700)
+pheatmap(L2_1[order(S$u[, 1]), order(S$v[, 1])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 1')
+# dev.off()
+
+o <- order(by(S$u[, 1], factor(sample_fac$stim), median))
+# pdf('Figures/double_1_boxplot_comp1.pdf')
+par(mfrow = c(1, 1))
+boxplot(S$u[, 1] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE) , ylab = 'loadings', main = 'component 1')
+# dev.off()
+
+
+# png('Figures/doublepos_1_comp2.png', height = 400, width = 700)
+pheatmap(S1[order(S$u[, 2]), order(S$v[, 2])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 2')
+# dev.off()
+
+o <- order(by(S$u[, 2], factor(sample_fac$stim), median))
+# pdf('Figures/double_1_boxplot_comp2.pdf')
+par(mfrow = c(1, 1))
+boxplot(S$u[, 2] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE) , ylab = 'loadings', main = 'component 2')
+# dev.off()
+
 ```
+
+__group 2__
+
+* Gut have higher frequencies and mite, CMV have lowest frequencies. Candida has highest IL17-IL22 frequencies, Ecoli has highest IFNg-IL22 frequencies. 
+
+
+```{r,echo=FALSE}
+# pca <- dudi.pca(L2[, c(8, 7, 14)], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1, clabel = 0.5)
+
+L2_1 <- scale(L2[,  c(8, 7, 14)])
+rownames(L2_1) <- stim[sample_fac$stim]
+S <- svd(L2_1)
+S1 <- svd_residuals(L2_1, 1)
+
+# png('Figures/doublepos_2_heatmap_comp1.png', height = 400, width = 700)
+pheatmap(L2_1[order(S$u[, 1]), order(S$v[, 1])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 1')
+# dev.off()
+
+o <- order(by(S$u[, 1], factor(sample_fac$stim), median))
+# pdf("Figures/doublepos_2_boxplot_comp1.pdf")
+par(mfrow = c(1, 1))
+boxplot(S$u[, 1] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE), main = 'component 1', ylab = 'loadings')
+# dev.off()
+
+
+
+pheatmap(S1[order(S$u[, 2]), order(S$v[, 2])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 2')
+
+
+o <- order(by(S$u[, 2], factor(sample_fac$stim), median))
+par(mfrow = c(1, 1))
+boxplot(S$u[, 2] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE) , main = 'component 2', ylab = 'loadings')
+
+
+
+```
+
+__group 3__
+
+* Candida, C.leptum have highest frequencies. Ecoli, CMV have lowest frequencies. 
+
+```{r,echo=FALSE}
+# pca <- dudi.pca(L2[, c(11, 6, 5, 1)], scan = FALSE, nf = 8)
+# betw <- bca(pca, factor(stim[sample_fac$stim]), scan = FALSE, nf = 3)
+# par(mfrow = c(1, 2))
+# s.class(betw$ls, factor(stim[sample_fac$stim]), col = sample_fac$stim)
+# s.arrow(betw$c1, clabel = 0.5)
+
+L2_1 <- scale(L2[,  c(11, 6, 5, 1)])
+rownames(L2_1) <- stim[sample_fac$stim]
+S <- svd(L2_1)
+S1 <- svd_residuals(L2_1, 1)
+
+#png("Figures/doublepos_3_heatmap_comp1.png", height = 400, width = 700)
+pheatmap(L2_1[order(S$u[, 1]), order(S$v[, 1])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 1')
+#dev.off()
+
+o <- order(by(S$u[, 1], factor(sample_fac$stim), median))
+# pdf("Figures/doublepos_3_boxplot_comp1.pdf")
+par(mfrow = c(1, 1))
+boxplot(S$u[, 1] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE), main = 'component 1', ylab = 'loadings' )
+# dev.off()
+
+
+pheatmap(S1[order(S$u[, 2]), order(S$v[, 2])], cluster_cols = FALSE, cluster_rows = FALSE, main = 'component 2')
+
+o <- order(by(S$u[, 2], factor(sample_fac$stim), median))
+par(mfrow = c(1, 1))
+boxplot(S$u[, 2] ~ factor(stim[sample_fac$stim], levels = stim[o], ordered = TRUE) , main = 'component 2', ylab = 'loadings')
+
+
+
+
+```
+
+
 
 
 ```{r,echo=FALSE}
@@ -578,12 +693,6 @@ pheatmap(cor(C)[o, o], cluster_rows = FALSE, cluster_cols = FALSE)
 
 ```
 
-
-# Note
-
-Kruskal-wallis tests show that all markers have at least one stochastically dominant stimulation subtype for bulk frequencies. This suggests that bulk frequencies alone are a very good fingerprint of immune response. 
-
-Interestingly, there isn't such a strong difference between stimulation subtypes for double positive frequencies. (and virtually none for contingency table expected values). This is because double positive frequencies are not independent of the bulk frequencies. For example, 5% double positive frequency in two different samples can mean different underlying biological processes depending on whether the bulk frequencies are 10% or 20%. 
 
 
 
