@@ -174,6 +174,16 @@ svd_residuals <- function(X, k) {
 }
 
 
+#' summarises the frequency of events that are at least single positive, double positive etc for each marker. Pooled over all donors
+#' @param burt  A list of burt matrices, output from make_burt
+#' @param N N = 1 for at least single positive, N = 2 for at least double positive, N = 3 for at least triple positive etc. For example, any event positive for IL17 is at least single positive; any event positive for IL17 and at least one other marker is double positive, any event positive for IL17 and at least two other markers is triple positive etc
+#' @export
+make_summary <- function(burt, N) {
+  burt_all <- do.call(rbind, burt)
+  N1 <- ncol(burt_all) - 2
+  N2 <- ncol(burt_all) - 2 + N - 1
+  apply(burt_all[, 1:N1], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:N1]) > N2 & x == 2])/sum(burt_all$counts))
+}
 
 
 
