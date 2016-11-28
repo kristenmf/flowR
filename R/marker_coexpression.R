@@ -11,7 +11,7 @@ make_breaks <- function(X) {
 }
 
 #' Converts each matrix into a burt matrix, consisting of marker combination and frequency it occurs in that sample
-#' @param X list of matrices, rows are events, columns are parameters
+#' @param X list of data frames, rows are events, columns are parameters. MUST be dataframes.
 #' @param breaks, output from make_breaks or custom if desired.
 #' @param markers vector of character strings indicating marker names, in same order as they appear in the columns of the matrices in X
 #' @return list of dataframes, with markers coded as 1 for 'positive' and 0 for 'negative', and additional column 'counts' indicating the proportion of events with that marker combination. Only combinations with non-zero proportions are included. Column 'which' gives a unique index to each sample.
@@ -33,24 +33,41 @@ make_burt <- function(X, breaks, markers) {
 #' @param burt , output of make_burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's total marker frequency to the average total marker frequency (averaged over all samples). Columns are markers, additionally the final column is the number of unstained cells. When a marker combination doesn't appear in the sample, a value of 1 is given.
 #' @export
-make_sample_coexp <- function(burt) {
-  burt <- mapply(function(x) rbind(x, c(rep(1, ncol(x) - 2), 0, x$which[1])), burt, SIMPLIFY = FALSE)
-  burt_all <- do.call(rbind, burt)
-  tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
-  unst <- lapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
-  unst <- mapply(sum, unst)
-  unst[unst == 0] <- 1
+# make_sample_coexp <- function(burt) {
+#   burt <- mapply(function(x) rbind(x, c(rep(1, ncol(x) - 2), 0, x$which[1])), burt, SIMPLIFY = FALSE)
+#   burt_all <- do.call(rbind, burt)
+#   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+#   unst <- lapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
+#   unst <- mapply(sum, unst)
+#   unst[unst == 0] <- 1
+#
+#   expression_donor <-
+#     lapply(burt, function(.x) {
+#       apply(.x[, 1:(ncol(burt_all) - 2)], 2, function(y) by(.x$counts, y, sum)[2])/tot_pos
+#     })
+#   expression_donor <- do.call(rbind, expression_donor)
+#   expression_donor[is.na(expression_donor)] <- 1
+#   expression_donor <- cbind(expression_donor, unst)
+#   return(expression_donor)
+# }
 
-  expression_donor <-
-    lapply(burt, function(.x) {
-      apply(.x[, 1:(ncol(burt_all) - 2)], 2, function(y) by(.x$counts, y, sum)[2])/tot_pos
-    })
-  expression_donor <- do.call(rbind, expression_donor)
-  expression_donor[is.na(expression_donor)] <- 1
-  expression_donor <- cbind(expression_donor, unst)
-  return(expression_donor)
-}
+make_sample_coexp <-
+  function(burt) {
+    burt <- mapply(function(x) rbind(x, c(rep(1, ncol(x) - 2), 0, x$which[1])), burt, SIMPLIFY = FALSE)
+    burt_all <- do.call(rbind, burt)
+    tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+    unst <- lapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
+    unst <- mapply(sum, unst)
 
+    expression_donor <-
+      lapply(burt, function(.x) {
+        apply(.x[, 1:(ncol(burt_all) - 2)], 2, function(y) by(.x$counts, y, sum)[2])
+      })
+    expression_donor <- do.call(rbind, expression_donor)
+    expression_donor[is.na(expression_donor)] <- 0
+    expression_donor <- cbind(expression_donor, unst)
+    return(expression_donor)
+  }
 
 
 #' For every possible pair of markers, find the ratio of the frequency in each sample to the average frequency over all samples.
@@ -58,35 +75,58 @@ make_sample_coexp <- function(burt) {
 #' @param markers vector of character strings, marker names in same order as they appear in columns of burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's  frequency to the average  frequency (averaged over all samples). Columns are marker pairs. When a marker combination doesn't appear in the sample, a value of 1 is given.
 #' @export
-make_cell_coexp <- function(burt, markers) {
+# make_cell_coexp <- function(burt, markers) {
+#
+#   burt_all <- do.call(rbind, burt)
+#   N <- ncol(burt_all) - 2
+#
+#   double_all <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#     sum(burt_all[burt_all[, i] == 2 & burt_all[, j] == 2, 'counts'])
+#   }
+#   )
+#   )
+#   )/length(burt)
+#
+#   double_pos <- t(sapply(1:length(burt), function(k) {
+#     unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#       sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
+#     }
+#     )
+#     )
+#     )
+#   }
+#   )
+#   )
+#   cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+#   colnames(double_pos) <- cn
+#   double_pos <- sweep(double_pos, 2, double_all, '/')
+#   double_pos[double_pos == 0] <- 1
+#   return(double_pos)
+#
+# }
 
-  burt_all <- do.call(rbind, burt)
-  N <- ncol(burt_all) - 2
+make_cell_coexp <-
+  function(burt, markers) {
 
-  double_all <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
-    sum(burt_all[burt_all[, i] == 2 & burt_all[, j] == 2, 'counts'])
-  }
-  )
-  )
-  )/length(burt)
+    burt_all <- do.call(rbind, burt)
+    N <- ncol(burt_all) - 2
 
-  double_pos <- t(sapply(1:length(burt), function(k) {
-    unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
-      sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
+    double_pos <- t(sapply(1:length(burt), function(k) {
+      unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+        sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
+      }
+      )
+      )
+      )
     }
     )
     )
-    )
-  }
-  )
-  )
-  cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
-  colnames(double_pos) <- cn
-  double_pos <- sweep(double_pos, 2, double_all, '/')
-  double_pos[double_pos == 0] <- 1
-  return(double_pos)
+    cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+    colnames(double_pos) <- cn
+    return(double_pos)
 
-}
+  }
+
 
 
 #' For every possible pair of markers, find the ratio of the frequency in each sample to expected frequency given no association between the markers.
