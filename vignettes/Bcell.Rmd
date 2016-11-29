@@ -1,0 +1,621 @@
+---
+title: "Claudi's Bcells"
+author: "Kristen Feher (DRFZ, Berlin)"
+date: "15 Aug 2016"
+output: html_document
+---
+
+# Introduction
+
+Flow cytometry data is typically analysed by gating but this is very labour-intensive. The direct algorithmic translation of gating is clustering, but it is well known to be hard to find the 'best' clustering. Furthermore, when analysing a large number of samples, there is the additional obstacle of matching clusters across samples. Such algorithms often turn out to be computationally intensive. 
+
+A clustering paradigm also forces cells into a discrete number of containers, however it may be the case that cells are existing 'between' states, i.e. cells are on a continuum. It may be more appropriate to describe cells states in a probabalistic fashion. Clustering yields list-type structures and this obscures the dynamic relationship between markers, especially as it manifests across a large number of samples. 
+
+To this end, we propose viewing flow cytometry data such that systematic variation of the markers is emphasised. We devise summary matrices of a large number of samples that emphasise two aspects that are of key biological interest: marker coexpression at the sample level (bulk frequency), and marker coexpression at the single cell level (double positive frequency). There is also the possibility to examine how single cell coexpression depends on sample level coexpression. Some key features of this methodology is that it is computationally cheap, and summarises the data such that it can be readily integrated with other data sources, e.g. clinical covariates. 
+
+# Data
+
+
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+library(cluster)
+library(ggplot2)
+#library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+library(igraph)
+library(glasso)
+library(plyr)
+#library(dunn.text)
+#devtools::load_all(".")
+library(flowR)
+
+# load data
+
+load('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Bcell_dump_pregate/data/comp_mtx.RData')
+load('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Bcell_dump_pregate/data/exprs_all_lin_no_offset.RData')
+sample_names <- c('K1', 'K2', 'M1', 'M2', 'T1', 'T2', paste('HD', 1:4, sep = ''), paste('K', 1:17 + 2, sep = ''), paste('M', 1:8 + 2, sep = ''), paste('T', 1:21 + 2, sep = ''))
+sample_names1 <- c('BM', 'BM', 'S', 'S', 'T', 'T', rep('PB', 4), rep('BM', 17), rep('S', 8), rep('T', 21))
+
+
+sample_names <- sample_names[-c(11, 21, 28)]
+sample_names1 <- sample_names1[-c(11, 21, 28)]
+
+############################
+
+# transform data
+
+#exprs_all_trimmed <- outlier_pretrim(exprs_all_lin, 0.01, 0.99)
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c('FITC-A', 'PE-A', 'PerCP-Cy5-5-A', 'PE-Cy7-A', 'APC-A', 'APC-Cy7-A', 'Pacific Blue-A', 'AmCyan-A'), lgcl)
+D_comp <- exprs_all_lin
+
+for (i in 1:length(D_comp)) {
+  colnames(D_comp[[i]]) <- c('FITC-A', 'PE-A', 'PerCP-Cy5-5-A', 'PE-Cy7-A', 'APC-A', 'APC-Cy7-A', 'Pacific Blue-A', 'AmCyan-A')
+}
+D_comp <- mapply(flowFrame, D_comp)
+D_comp <- mapply(function(x) compensate(x, comp_mtx), D_comp, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) transform(x, L), D_comp, SIMPLIFY = FALSE)
+dump_neg <- mapply(function(x) x[, 7] < 2.3, D_comp_lgcl, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x, y) exprs(x)[y, ], D_comp_lgcl, dump_neg, SIMPLIFY = FALSE)
+
+markers <- c('IgA', 'IgD', 'IgM', 'IgG', 'CD27', 'CD19',   'CD20')
+
+D_comp_lgcl <- mapply(function(x) x[, -7], D_comp_lgcl, SIMPLIFY = FALSE)
+Data <- D_comp_lgcl
+for (i in 1:length(Data)) {
+  colnames(Data[[i]]) <- markers
+  }
+Data <- mapply(as.data.frame, Data, SIMPLIFY = FALSE)
+
+```
+
+
+
+Plot marker density and splits. 
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+breaks <- make_breaks(mapply(function(x) x[, 1:7], Data, SIMPLIFY = FALSE))
+breaks[[4]][2] <- 3.5
+breaks[[6]][2] <- 2.3
+breaks[[7]][2] <- 2.6
+
+burt <- make_burt(Data, breaks, markers)
+burt1 <- mapply(function(x) x[x$CD19 == 2, -6], burt, SIMPLIFY = FALSE)
+burt2 <- mapply(function(x) {x$counts <- x$counts/sum(x$counts); return(x)}, burt1, SIMPLIFY = FALSE)
+
+burt3 <- mapply(function(x) {x <- x[rowSums(x[, 1:6]) > 6, ]; x$counts <- x$counts/sum(x$counts); return(x)}, burt1, SIMPLIFY = FALSE)
+
+
+par(mfrow = c(2, 4))
+for (i in 1:7) {
+g <- unlist(mapply(function(x) x[, i], Data))
+plot(density(g), main = colnames(Data[[1]])[i], xlab = 'intensity')
+abline(v=breaks[[i]][2])
+}
+
+
+```
+
+# Basic statistics
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. In this dataset, the majority of stained cells are single or double positive. 
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+# burt_all <- do.call(rbind, burt)
+# t1 <- apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+# t1
+
+t1 <- make_summary(burt2, 1)
+t1
+       
+# at least double positive 
+#t2 <- apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 8 & x == 2])/sum(burt_all$counts))
+t2 <- make_summary(burt2, 2)
+t2
+
+# at least triple positive 
+t3 <- make_summary(burt2, 3)
+t3
+
+# at least quadruple positive 
+t4 <- make_summary(burt2, 4)
+t4
+
+# library(xtable)
+# xtable(cbind(t1, t2, t3, t4), display = rep('e', 5))
+
+```
+
+
+# Sample level coexpression
+
+
+Construct a matrix of bulk frequency, where each row is a donor, and each column corresponds to a marker. Each entry is frequency of cells in the sample that have express the marker with an intensity above the threshold. Here, 'marker frequency' corresponds to the proportion of events in a sample that is positive for a marker, and includes single positive events, double positive events, triple positive event etc, and corresponds to a univariate marker histogram (typically used in flow cytometry).  The final column of the matrix consists of the frequency of unstained cells in each sample. 
+
+The matrix summarises how markers are coexpressed in a sample. It is a bulk measurement that is averaged over all events in a sample. The rows will probably have a sum >1, as cells will be double counted. It contains no explicit information about coexpression on the single cell level. However, as the total frequency of each marker is a mixture of single positive and double positive frequencies, it is hidden as a latent process. 
+
+
+## Analysis of bulk frequency matrix
+
+The bulk frequency matrix is inspected by a boxplot on the columns (emphasising absolute frequency) and performing a correspondence analysis (emphasising variation around average frequency). An alternative visualisation is introduced for the correspondence analysis (CA), by calculating the polar coordinates of each sample in the first 2 dimensions of the CA, and then plotting marker intensity vs. polar angle. 
+
+The bulk frequency matrix is composed of cells that are CD19+ (and normalised to total number of CD19+). There is a very strong separation of BM to everything else. BM has the most non-producing CD19+ cells. This is because BM is the origin of B cells and they go elsewhere to mature. 
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+# make_sample_coexp_raw <- 
+# function(burt) {
+#   burt <- mapply(function(x) rbind(x, c(rep(1, ncol(x) - 2), 0, x$which[1])), burt, SIMPLIFY = FALSE)
+#   burt_all <- do.call(rbind, burt)
+#   tot_pos <- apply(burt_all[, 1:(ncol(burt_all) - 2)], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+#   unst <- lapply(burt, function(.x) .x[rowSums(.x[, 1:(ncol(burt_all) - 2)]) == (ncol(burt_all) - 2), 'counts'])
+#   unst <- mapply(sum, unst)
+# 
+#   expression_donor <-
+#     lapply(burt, function(.x) {
+#       apply(.x[, 1:(ncol(burt_all) - 2)], 2, function(y) by(.x$counts, y, sum)[2])
+#     })
+#   expression_donor <- do.call(rbind, expression_donor)
+#   expression_donor[is.na(expression_donor)] <- 0
+#   expression_donor <- cbind(expression_donor, unst)
+#   return(expression_donor)
+# }
+
+#sample_coexp <- make_sample_coexp(burt)
+sample_coexp_raw <- make_sample_coexp(burt2)
+# minval <- apply(sample_coexp_raw, 2, function(x) min(x[x > 0]))
+# for (i in 1:ncol(sample_coexp_raw)) {
+#   sample_coexp_raw[sample_coexp_raw[, i] == 0, i] <- minval[i]/10
+#   }  
+# #rownames(sample_coexp_raw) <- stim[sample_fac$stim]
+# sample_coexp_raw <- apply(sample_coexp_raw, 2, function(x) x/mean(x))
+
+par(mfrow = c(4, 1))
+boxplot(sample_coexp_raw[sample_names1 == 'BM', ], ylim = c(0, 1), main = 'bulk frequency - BM')
+boxplot(sample_coexp_raw[sample_names1 == 'PB', ], ylim = c(0, 1), main = 'bulk frequency - PB')
+boxplot(sample_coexp_raw[sample_names1 == 'S', ], ylim = c(0, 1), main = 'bulk frequency - S')
+boxplot(sample_coexp_raw[sample_names1 == 'T', ], ylim = c(0, 1), main = 'bulk frequency - T')
+
+
+
+N <- sum(sample_coexp_raw)
+sample_coexp_raw <- sample_coexp_raw/N
+ca_sample <- ca(sample_coexp_raw^0.1)
+
+par(mfrow = c(1, 2))
+plot(ca_sample$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_sample$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_sample$colcoord * 2, type = 'n')
+text(ca_sample$colcoord, labels = colnames(sample_coexp_raw))
+arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+defaultpar <- par()
+
+polar <- atan2(ca_sample$rowcoord[, 1], ca_sample$rowcoord[, 2])
+o <- order(polar) 
+par(mfcol = c(4, 2), mar = c(1, 3, 1, 3))
+for (i in 1:7) {
+plot(sample_coexp_raw[, i][o]*N, pch = 16, cex = 2, col = as.numeric(factor(sample_names1))[o], main = colnames(sample_coexp_raw)[i], axes = FALSE, ylab = 'proportion')
+axis(2)
+box()
+}
+par(defaultpar)
+
+```
+
+Now check the distribution of markers amongst producing CD19+ cells, i.e. positive for at least one other marker besides CD19. Frequency is normalised to total number of producing CD19+ cells. 
+Tonsil has the most IgA and IgG (and BM has the least). BM has the least CD27 (memory bcells). Interestingly, BM generally has less CD20 that other sample types - could these be plasmablasts?
+IgA, IgG and CD27 are well correlated (memory cells). IgD and IgM are correlated (naive cells). CD20 is a fairly ubiquitous marker. 
+Once only producing cells are considered, the overall pattern of bulk marker frequency is actually fairly similar across the sample types (e.g. IgA always has the lowest frequency, CD20 always has the highest frequency). 
+
+
+
+```{r,echo=FALSE, warning=FALSE, message=FALSE}
+############
+
+sample_coexp_raw <- make_sample_coexp(burt3)
+# minval <- apply(sample_coexp_raw, 2, function(x) min(x[x > 0]))
+# for (i in 1:ncol(sample_coexp_raw)) {
+#   sample_coexp_raw[sample_coexp_raw[, i] == 0, i] <- minval[i]/10
+#   }  
+# #rownames(sample_coexp_raw) <- stim[sample_fac$stim]
+# sample_coexp_raw <- apply(sample_coexp_raw, 2, function(x) x/mean(x))
+
+par(mfrow = c(4, 1))
+boxplot(sample_coexp_raw[sample_names1 == 'BM', -7], ylim = c(0, 1), main = 'bulk frequency - BM')
+boxplot(sample_coexp_raw[sample_names1 == 'PB', -7], ylim = c(0, 1), main = 'bulk frequency - PB')
+boxplot(sample_coexp_raw[sample_names1 == 'S', -7], ylim = c(0, 1), main = 'bulk frequency - S')
+boxplot(sample_coexp_raw[sample_names1 == 'T', -7], ylim = c(0, 1), main = 'bulk frequency - T')
+
+
+
+N <- sum(sample_coexp_raw[, -7])
+sample_coexp_raw <- sample_coexp_raw/N
+ca_sample <- ca(sample_coexp_raw[, -7]^0.1)
+
+par(mfrow = c(1, 2))
+plot(ca_sample$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_sample$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_sample$colcoord * 2, type = 'n')
+text(ca_sample$colcoord, labels = colnames(sample_coexp_raw)[-7])
+arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+defaultpar <- par()
+
+polar <- atan2(ca_sample$rowcoord[, 1], ca_sample$rowcoord[, 2])
+o <- order(polar) 
+par(mfcol = c(4, 2), mar = c(1, 3, 1, 3))
+for (i in 1:6) {
+plot(sample_coexp_raw[, i][o]*N, pch = 16, cex = 2, col = as.numeric(factor(sample_names1))[o], main = colnames(sample_coexp_raw)[i], axes = FALSE, ylab = 'proportion')
+axis(2)
+box()
+}
+par(defaultpar)
+
+
+sample_coexp_raw <- make_sample_coexp(burt2)
+
+```
+
+
+
+# Single cell coexpression
+
+
+A matrix is now constructed with entries consisting of the  double positive frequency in each sample and the average double positive frequency, for each pair of markers. 
+The double positive frequency matrix potentially includes events which are triple positive, quadruple positive etc. Some combinations are very rare, so if the count is zero in more than 25% of samples, the combination is removed. This matrix is now gives insight to the coexpression at the single cell level. Like the bulk frequency matrix, the row sums of the matrix will probably be greater than one, as cells will be counted multiply in different double positive categories. 
+
+A cross correlation matrix can be constructed between the bulk frequencies and double positive frequencies, such that each row corresponds to a unique marker pair  and each column corresponds to a marker. 
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+# make_cell_coexp_raw <- 
+# function(burt, markers) {
+# 
+#   burt_all <- do.call(rbind, burt)
+#   N <- ncol(burt_all) - 2
+# 
+#   double_pos <- t(sapply(1:length(burt), function(k) {
+#     unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
+#       sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
+#     }
+#     )
+#     )
+#     )
+#   }
+#   )
+#   )
+#   cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+#   colnames(double_pos) <- cn
+#   return(double_pos)
+# 
+# }
+
+
+
+
+cell_coexp_raw <- make_cell_coexp(burt2, markers[-6])
+missing_vals <- apply(cell_coexp_raw, 2, function(x) length(which(x == 0)))/length(burt)
+# minval <- apply(cell_coexp_raw, 2, function(x) min(x[x > 0]))
+# for (i in 1:ncol(cell_coexp_raw)) {
+#   cell_coexp_raw[cell_coexp_raw[, i] == 0, i] <- minval[i]/10
+#   }  
+#rownames(sample_coexp_raw) <- stim[sample_fac$stim]
+#cell_coexp_raw <- apply(cell_coexp_raw, 2, function(x) x/mean(x))
+
+```
+
+
+Inspect double positive frequencies, and how they possibly interact by combining with overlapping marker combinations. The procedure is to find the correlation between the double positive frequencies over the samples, and also generate a 'masking matrix' of the same dimensions with elements equal to one if two combinations overlap (e.g. CD20-IgM and CD20-IgD overlap due to CD20) and zero otherwise. Elements of the correlation matrix are set to zero if the corresponding element in the masking matrix is zero. We are left with a weighted adjacency matrix, which is the entry point to a large variety of graph clustering methods. However, given the small number of markers and the ease with which it can be visually inspected, the masked correlation matrix is transformed to a distance matrix (arxiv:1208.3145) in order to be used with hierarchical clustering. 
+
+The cluster ordering can then be used to inspect the cross correlation matrix, to understand how the double positive frequencies are related to the bulk frequencies. The major structures that can be seen are:
+
+* __Naive Bcells__ CD20-IgD, IgM-IgD, CD20-IgM
+* __Memory Bcells, IgD negative__ CD20-IgG, CD27-IgG, CD20-CD27
+* __Memory Bcells, IgD positive__ CD27-IgD, CD27-IgM
+* __Memory Bcells, IgA positive__ CD27-IgA, CD20-IgA, IgG-IgA, IgD-IgA, IgM-IgA
+* __'leftovers'__ IgG-IgD, IgG-IgM : split across various memory Bcells. 
+
+The major advantage of constructing bulk and double positive frequency matrices is that the procedure can be recursively applied. Here, new bulk frequency matrices can be constructed on the subsets defined above, to inspect them in more detail. 
+
+
+```{r,echo=FALSE}
+cn <- colnames(cell_coexp_raw)
+indicator <- sapply(markers[-6], function(.m) as.numeric(sapply(cn, function(.c) .m %in% strsplit(.c, '_')[[1]])))
+indicator_square <- indicator %*% t(indicator)
+diag(indicator_square) <- 1
+colnames(indicator_square) <- cn
+rownames(indicator_square) <- cn
+
+c <- cor(cell_coexp_raw) * indicator_square
+d <- sqrt(0.5 * (1 - c)) #arxiv:1208.3145
+pheatmap(d)
+hc <- hclust(as.dist(d), method = 'average')
+par(mfrow = c(1, 1))
+plot(hc, main = 'relationship of double positive frequencies')
+```
+
+Inspecting the cross correlation matrix, the IgA positive combinations are anticorrelated to IgM bulk frequency. Naive cell combinations are anticorrelated to IgA and CD27 bulk frequencies. IgD negative memory bcells are anticorrelated to IgM bulk frequency. 
+
+```{r,echo=FALSE}
+pheatmap(cc[-7, hc$order], cluster_cols = FALSE, main = 'cross correlation matrix')
+
+```
+
+
+## Naive Bcells
+
+We now attempt to understand why certain structures are forming, despite the overlapping. The dendrogram above is quite small and we can inspect by eye. There is a cluster comprising CD20-IgM, CD20-IgD, IgM-IgD (i.e. all marker combinations out of CD20, IgD, IgM). The combination of these 3 markers corresponds to naive B cells. In each sample, find the cells that are (CD20+IgM+) OR (CD20+IgD+) OR (IgM+IgD+). These cells are potentially double counted in the different double positive categories. Amongst these cells, re-calculate the bulk frequencies of each marker with respect to the total number of naive cells. Firstly, a boxplot of the naive cell frequency with respect to the different frequencies demonstrates that the majority of cells are naive (with the exception of BM, but this is due to the high frequency of non-producing cells). 
+
+Then, a boxplot shows that in this naive subset, the frequency of IgA, IgG and CD27 are very low (with counts normalised to total naive cells). In most samples, the CD20 frequency is close to 100%, which is necessary if it is not an immature Bcell. To a lesser extent, cells are mostly IgD and IgM positive. There is low 'contamination' from IgA, IgG and CD27. Even though this subset will contain some memory Bcells due to overlapping marker combinations, it is largely driven by naive cells. 
+
+
+By performing a CA (and removing absolute magnitude of frequency),  it can be seen that spleen and two PB samples have more CD27, and tonsil has IgG and IgA. The distribution of these three markers suggests that PB samples have more IgD positive memory Bcells (true?), and tonsil has additional cells involving IgG and IgA. In fact, we have prior knowledge from previous analysis that tonsil has germinal centre cells that coexpress IgD and IgA (not possible for a 'normal' memory Bcell). 
+
+
+```{r,echo=FALSE}
+
+# df <-
+# lapply(1:5, function(I) {
+#   lapply((I+1):6, function(J) {
+#     K <- (1:6)[-c(I, J)]
+# a <- mapply(function(x) sum(x[x[, I] == 2 & x[, J] == 2, 'counts']), burt2)
+# b <- lapply(1:4, function(i) mapply(function(x) sum(x[x[, I] == 2 & x[, J] == 2 & x[, K[i]] == 2, 'counts']), burt2))
+# df <- data.frame(x = rep(a, 4), y = unlist(b), which = rep(colnames(burt2[[1]])[K], rep(length(a), 4)), donor = sample_names1)
+# return(df)
+# }
+# )
+# }
+# )
+# df <- unlist(df, recursive = FALSE)
+# 
+# cn[15]
+# ggplot(df[[15]], aes(x = x, y = y/x, colour = donor)) + geom_point() + facet_wrap(~ which)
+# ggplot(df[[1]], aes(x = x, y = y/x, colour = which)) + geom_point() 
+
+
+burt2_update <- burt2
+burt2_update <- 
+lapply(burt2_update, function(.x) {
+  tmp <- .x
+tmp$naive <- factor(tmp$CD20 == 2 & tmp$IgD == 2 | tmp$IgM == 2 & tmp$IgD == 2 | tmp$CD20 == 2 & tmp$IgM == 2);
+return(tmp)
+}
+)
+
+burt2_update <- 
+lapply(burt2_update, function(.x) {
+  tmp <- .x
+tmp$iga <- factor(tmp$IgA == 2);
+return(tmp)
+}
+)
+
+burt2_update <- 
+lapply(burt2_update, function(.x) {
+  tmp <- .x
+tmp$memory_igdneg <- factor(tmp$CD20 == 2 & tmp$IgG == 2 | tmp$CD27 == 2 & tmp$IgG == 2 | tmp$CD20 == 2 & tmp$CD27 == 2);
+return(tmp)
+}
+)
+
+
+burt2_update <- 
+lapply(burt2_update, function(.x) {
+  tmp <- .x
+tmp$memory_igdpos <- factor(tmp$CD27 == 2 & tmp$IgD == 2 | tmp$CD27 == 2 & tmp$IgM == 2);
+return(tmp)
+}
+)
+
+burt2_update1 <- lapply(burt2_update, function(.b) .b[rowSums(.b[, 1:6]) > 6, ])
+burt2_update1 <- lapply(burt2_update1, function(.b) {.b$counts <- .b$counts/sum(.b$counts); return(.b)})
+
+
+
+
+
+naive <- burt2_update
+naive <- mapply(function(x) x[x$naive == TRUE, ], naive, SIMPLIFY = FALSE)
+par(mfrow = c(1,1))
+boxplot(mapply(function(x) sum(x$counts), naive) ~ factor(sample_names1), main = 'naive frequencies over sample type')
+nonprod <- mapply(function(x) x[rowSums(x[, 1:6]) == 6, 'counts'], burt2)
+nonprod[[10]] <- 0
+nonprod <- unlist(nonprod)
+boxplot(nonprod ~ factor(sample_names1), main = 'non-producer frequencies over sample type')
+
+naive_sample <- lapply(burt2_update1, function(.b) {.b <- .b[.b$naive == TRUE, 1:8]; .b$counts <- .b$counts/sum(.b$counts); return(.b)})
+naive_sample <- make_sample_coexp(naive_sample)[, -7]
+
+
+par(mfrow = c(4, 1))
+boxplot(naive_sample[sample_names1 == 'BM', ], ylim = c(0, 1), main = 'Bulk frequencies - BM')
+boxplot(naive_sample[sample_names1 == 'PB', ], ylim = c(0, 1), main = 'Bulk frequencies - PB')
+boxplot(naive_sample[sample_names1 == 'S', ], ylim = c(0, 1), main = 'Bulk frequencies - S')
+boxplot(naive_sample[sample_names1 == 'T', ], ylim = c(0, 1), main = 'Bulk frequencies - T')
+
+ca_naive <- ca(naive_sample^0.5)
+par(mfrow = c(1, 2))
+plot(ca_naive$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_naive$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_naive$colcoord * 2, type = 'n')
+text(ca_naive$colcoord, labels = colnames(naive_sample), cex = 0.4)
+arrows(0, 0, ca_naive$colcoord[, 1]*1, ca_naive$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+
+```
+
+## IgA positive cells
+
+Looking at the dendrogram above, there is a cluster that contains everything that is IgA positive. In the boxplot below, it can be seen that almost everything is CD20 positive (by definition), but not everything is CD27 positive (median is about 70%). Here we have prior knowledge that there is a population with weak CD27 expression (in between naive and memory) that are activated/germinal centre b-cells. If we didn't have that prior knowledge, and were expecting a clear distinction between memory and b-cells, this would be a very strong indication that there is something in the data that doesn't conform to expectations and should be inspected in the raw data. 
+
+While almost all cells are CD20 positive, not every cell is, especially in BM and spleen. These cells could be CD27 positive and producing antibodies and therefore could be plasmablasts/cells. 
+
+Inspecting the CA, tonsil has higher frequencies of IgG positive, as well as IgM and IgD positive. Some BM and spleen samples are also in the direction of IgM and IgD. 
+
+```{r,echo=FALSE}
+
+iga <- burt2_update
+iga <- mapply(function(x) x[x$iga == TRUE, ], iga, SIMPLIFY = FALSE)
+par(mfrow = c(1,1))
+boxplot(mapply(function(x) sum(x$counts), iga) ~ factor(sample_names1))
+
+iga_sample <- lapply(burt2_update1, function(.b) {.b <- .b[.b$iga == TRUE, 1:8]; .b$counts <- .b$counts/sum(.b$counts); return(.b)})
+iga_sample <- make_sample_coexp(iga_sample)[, -c(1, 7)]
+
+par(mfrow = c(4, 1))
+boxplot(iga_sample[sample_names1 == 'BM', ], ylim = c(0, 1), main = 'BM')
+boxplot(iga_sample[sample_names1 == 'PB', ], ylim = c(0, 1), main = 'PB')
+boxplot(iga_sample[sample_names1 == 'S', ], ylim = c(0, 1), main = 'S')
+boxplot(iga_sample[sample_names1 == 'T', ], ylim = c(0, 1), main = 'T')
+
+
+
+ca_iga <- ca(iga_sample^0.5)
+par(mfrow = c(1, 2))
+plot(ca_iga$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_iga$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_iga$colcoord * 2, type = 'n')
+text(ca_iga$colcoord, labels = colnames(iga_sample), cex = 0.4)
+arrows(0, 0, ca_iga$colcoord[, 1]*1, ca_iga$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+
+```
+
+## IgD negative memory Bcells
+
+IgDneg memory cells, defined by CD20-IgG, CD27-IgG, CD20-CD27. By definition, this set can't contain naive cells (but naive set can contain memory cells). Inspect boxplot of bulk frequencies (with respect to total IgDneg memory cells). Almost every cell in every donor must be CD20 positive (by definition). Then, in half the donors, there are at least 70% of events that are CD27 positive. Maybe there are some cells which are weakly expressing CD27 and don't quite meet the threshold - but in this subset if the cells are CD27 negative, they must be IgG positive in order to be included. It means that any cell which isn't CD27 'positive' also can't be a naive cell, so maybe it's somehow in transition from naive to memory with weak CD27. Half the donors have at least 55% cells positive for IgG. There is a wide range of IgM positive frequencies, from 0 - 80%. By the classical definition of IgD negative memory Bcells, it is expected that IgG and IgM are coexpressed. The median frequencies of IgA and IgD are low (15% and 25% respectively). 
+
+
+```{r,echo=FALSE}
+memory <- burt2_update
+memory <- mapply(function(x) x[x$memory_igdneg == TRUE, ], memory, SIMPLIFY = FALSE)
+par(mfrow = c(1,1))
+boxplot(mapply(function(x) sum(x$counts), memory) ~ factor(sample_names1))
+
+
+memory_sample <- lapply(burt2_update1, function(.b) {.b <- .b[.b$memory_igdneg == TRUE, 1:8]; .b$counts <- .b$counts/sum(.b$counts); return(.b)})
+memory_sample <- make_sample_coexp(memory_sample)[, -7]
+
+par(mfrow = c(4, 1))
+boxplot(memory_sample[sample_names1 == 'BM', ], ylim = c(0, 1), main = 'BM')
+boxplot(memory_sample[sample_names1 == 'PB', ], ylim = c(0, 1), main = 'PB')
+boxplot(memory_sample[sample_names1 == 'S', ], ylim = c(0, 1), main = 'S')
+boxplot(memory_sample[sample_names1 == 'T', ], ylim = c(0, 1), main = 'T')
+
+ca_memory <- ca(memory_sample^0.5)
+par(mfrow = c(1, 2))
+plot(ca_memory$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_memory$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_memory$colcoord * 2, type = 'n')
+text(ca_memory$colcoord, labels = colnames(memory_sample), cex = 0.4)
+arrows(0, 0, ca_memory$colcoord[, 1]*1, ca_memory$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+
+
+
+```
+
+## IgD positive memory Bcells
+
+Almost everything is CD27 and CD20 positive. However, CD20 median frequency is slightly lower than CD27 median frequency, indicating possible prescence of plasmablasts. Median frequency of IgM and IgD are both higher than IgG and IgA. However, IgD frequencies are generally lower than IgM, meaning there is the possibility of IgD negative memory Bcells. Inspecting the CA, tonsil has higher frequencies of IgA, as well as some BM. Spleen has higher frequencies of IgG, as well some tonsil. 
+
+
+```{r,echo=FALSE}
+
+memory_IgD <- burt2_update
+memory_IgD <- mapply(function(x) x[x$memory_igdpos == TRUE, ], memory_IgD, SIMPLIFY = FALSE)
+par(mfrow = c(1,1))
+boxplot(mapply(function(x) sum(x$counts), memory_IgD) ~ factor(sample_names1), main = 'frequency of IgD pos memory Bcells')
+
+memoryigd_sample <- lapply(burt2_update1, function(.b) {.b <- .b[.b$memory_igdpos == TRUE, 1:8]; .b$counts <- .b$counts/sum(.b$counts); return(.b)})
+memoryigd_sample <- make_sample_coexp(memoryigd_sample)[, -7]
+
+par(mfrow = c(4, 1))
+boxplot(memoryigd_sample[sample_names1 == 'BM', ], ylim = c(0, 1), main = 'bulk frequency - BM')
+boxplot(memoryigd_sample[sample_names1 == 'PB', ], ylim = c(0, 1), main = 'bulk frequency - PB')
+boxplot(memoryigd_sample[sample_names1 == 'S', ], ylim = c(0, 1), main = 'bulk frequency - S')
+boxplot(memoryigd_sample[sample_names1 == 'T', ], ylim = c(0, 1), main = 'bulk frequency - T')
+
+ca_memoryigd <- ca(memoryigd_sample^0.5)
+par(mfrow = c(1, 2))
+plot(ca_memoryigd$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_memoryigd$rowcoord, labels = sample_names1, col = as.numeric(factor(sample_names1)))
+plot(ca_memoryigd$colcoord * 2, type = 'n')
+text(ca_memoryigd$colcoord, labels = colnames(memory_sample), cex = 0.4)
+arrows(0, 0, ca_memoryigd$colcoord[, 1]*1, ca_memoryigd$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+
+```
+
+
+# Conclusion
+
+classical subsets, inconvenient marker combinations, overlapping/blurring of classical subsets. 
+
+
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+# make_rsq <- 
+# function(sample_coexp, cell_coexp, markers) { # can be donor-centered versions if necessary
+#   N <- ncol(sample_coexp) - 1
+#   #markers <- Markers
+#   rsq <- lapply(1:(N - 1), function(i) lapply((i+1):N, function(j) {
+#     df <- data.frame(x1 = sample_coexp[, i], x2 = sample_coexp[, j], y = cell_coexp[, which(paste(colnames(sample_coexp)[j], colnames(sample_coexp)[i], sep= '_') == colnames(cell_coexp))])
+#     if (ncol(df) == 3) {
+#       lmodel <- lm(y ~ x1 + x2, df)
+#       summary(lmodel)$r.squared} else {0}
+#   }
+#   )
+#   )
+# 
+#   rsq <- unlist(rsq)
+# 
+#   cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
+#   C <- cor(sample_coexp)
+#   cor_markers <- unlist(sapply(1:(N-1), function(i) C[(i+1):N, i]))
+#   names(cor_markers) <- cn
+# 
+#   return(list(rsq = rsq, cor = cor_markers))
+# }
+# 
+# 
+# 
+# sample_coexp <- sample_coexp_raw
+# sample_coexp[sample_coexp == 0] <- min(sample_coexp[sample_coexp > 0])/2
+# sample_coexp <- scale(log(sample_coexp), scale = FALSE, center = TRUE)
+# 
+# cell_coexp <- cell_coexp_raw
+# cell_coexp[cell_coexp == 0] <- min(cell_coexp[cell_coexp > 0])/2
+# cell_coexp <- scale(log(cell_coexp), scale = FALSE, center = TRUE)
+# 
+# 
+# rsq <- make_rsq(sample_coexp, cell_coexp, markers)
+# 
+# 
+# par(mfrow = c(1, 1))
+# xlim = c(min(abs(rsq$cor)) - 0.1, max(abs(rsq$cor)) + 0.1)
+# ylim = c(min(abs(rsq$rsq)) - 0.1, max(abs(rsq$rsq)) + 0.1)
+# plot(abs(rsq$cor), rsq$rsq, pch = 16, cex = 1,  type = 'n', xlab = '|correlation coefficient|', ylab = 'R square', xlim = xlim, ylim = ylim)
+# text(abs(rsq$cor), rsq$rsq, names(rsq$cor), cex = 0.5)
+# abline(lm(rsq$rsq ~ abs(rsq$cor)))
+
+
+```
+
+
+
