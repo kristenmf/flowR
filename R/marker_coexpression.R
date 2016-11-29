@@ -226,6 +226,22 @@ make_summary <- function(burt, N) {
 }
 
 
+#' Makes a square matrix indicating overlapping marker pairs
+#' @param single a vector of character strings, containing the set of markers from which the pairs are drawn.
+#' @param double a vector of character strings, containing the set of pairs.
+#' @param sep the separating character. For example, single = c('A', 'B'), double = c('A_B') and sep = '_'
+#' @return an square matrix with dimension equal to length of double. Matrix element equals 1 if the two pairs share a marker, zero otherwise.
+#' @export
+make_mask <- function(single, double, sep) {
+  cn <- single
+  indicator <- sapply(double, function(.m) as.numeric(sapply(cn, function(.c) .m %in% strsplit(.c, sep)[[1]])))
+  indicator_square <- indicator %*% t(indicator)
+  diag(indicator_square) <- 1
+  colnames(indicator_square) <- cn
+  rownames(indicator_square) <- cn
+  return(indicator_square)
+
+}
 
 
 
