@@ -75,36 +75,6 @@ make_sample_coexp <-
 #' @param markers vector of character strings, marker names in same order as they appear in columns of burt
 #' @return A matrix, where each row is a vector of the ratio of a sample's  frequency to the average  frequency (averaged over all samples). Columns are marker pairs. When a marker combination doesn't appear in the sample, a value of 1 is given.
 #' @export
-# make_cell_coexp <- function(burt, markers) {
-#
-#   burt_all <- do.call(rbind, burt)
-#   N <- ncol(burt_all) - 2
-#
-#   double_all <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
-#     sum(burt_all[burt_all[, i] == 2 & burt_all[, j] == 2, 'counts'])
-#   }
-#   )
-#   )
-#   )/length(burt)
-#
-#   double_pos <- t(sapply(1:length(burt), function(k) {
-#     unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) {
-#       sum(burt[[k]][burt[[k]][, i] == 2 & burt[[k]][, j] == 2, 'counts'])
-#     }
-#     )
-#     )
-#     )
-#   }
-#   )
-#   )
-#   cn <- unlist(lapply(1:(N - 1), function(i) sapply((i+1):N, function(j) paste(markers[j], markers[i], sep = '_'))))
-#   colnames(double_pos) <- cn
-#   double_pos <- sweep(double_pos, 2, double_all, '/')
-#   double_pos[double_pos == 0] <- 1
-#   return(double_pos)
-#
-# }
-
 make_cell_coexp <-
   function(burt, markers) {
 
@@ -244,6 +214,23 @@ make_mask <- function(single, double, sep) {
 }
 
 
+#' takes a burt table for one donor and a data frame describing the double positive pairs. returns a vector specifying whether a row in the burt table belongs to the subset described by the dataframe.
+#' @param donor a burt table for a single donor, output of make_burt
+#' @param pairs A dataframe or matrix summarising marker pairs of interest. Dataframe has two columns, one for each element of the pair.
+#' @return A vector with length equal to number of rows in donor, encoding whether marker combination is in subset or not. Vector element equals 2 when in the subset, and 1 when not.
+#' @export
+doublepos_events <- function(donor, pairs) {
+  as.integer(Reduce('+', lapply(1:nrow(pairs), function(i) donor[[pairs[i, 1]]] == 2 & donor[[pairs[i, 2]]] == 2)) > 0) + 1
+}
+
+#' takes a burt table for one donor and a data frame describing the double positive pairs. returns a vector specifying whether a row in the burt table belongs to the subset described by the dataframe.
+#' @param donor a burt table for a single donor, output of make_burt
+#' @param pairs A dataframe or matrix summarising marker pairs of interest. Dataframe has two columns, one for each element of the pair.
+#' @return A vector with length equal to number of rows in donor, encoding whether marker combination is in subset or not. Vector element equals 2 when in the subset, and 1 when not.
+#' @export
+singlepos_events <- function(donor, marker, bulkmarkers) { # takes a burt table for one donor and a marker name. returns a vector specifying whether a row in the burt table is single positive for that marker
+  as.integer(rowSums(donor[bulkmarkers]) == 8 & donor[[marker]] == 2) + 1
+}
 
 
 

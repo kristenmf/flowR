@@ -1,0 +1,945 @@
+---
+title: "antigen specific tcells - marker coexpression"
+author: "Kristen Feher (DRFZ, Berlin)"
+date: "15 January 2017"
+output: html_document
+---
+
+# Introduction
+
+When flow cytometry data is manually analysed, a sequence of bivariate dotplots is inspected. The sequence of plots is driven by prior biological knowledge (i.e. relationships between markers), biological question (specific cell subsets of interest) and also to constrain the number of plots (which rapidly increases as the number of markers increases). 
+
+It would be infeasible to inspect every bivariate dotplot. Even if it were, the multivariate connections between markers would be missed in a visual inspection, due to the highly overlapping nature of the plots. Here, we present a method to automatically analyse all possible bivariate dotplots, and understand their overlapping by analysing their systematic variation among marker pairs over samples. This approach is marker-centric, as opposed to a more subset-centric view that some flow cytometry clustering method take. This marker-centric view should be more robust in the case that biological variation is larger than the signal of interest. It is also of interest here, in antigen specific T-cell analysis, when the number of cells is very small. Furthermore, the marker centric view can facilitate the description of cell plasticity, as no strict subet boundaries are required. 
+
+We devise summary matrices of a large number of samples that emphasise two aspects that are of key biological interest: marker coexpression at the sample level (bulk frequency), and marker coexpression at the single cell level (double positive frequency). This method can be applied recursively, i.e. subsets can be defined by correlated double positive combinations, and then a new bulk frequency matrix can be calculated to easily inspect the contents of the subset.  Some key features of this methodology is that it is computationally cheap, and summarises the data such that it can be readily integrated with other data sources, e.g. clinical covariates. 
+
+
+# Data
+
+Data was provided by __Petra Bacher__ and __Alex Scheffold__ (Department of Rheumatology and Clinical Immunology, Charite-Universitaetsmedizin Berlin)
+
+Eight healthy donor samples are stimulated eight times each by eight different pathogens, yielding 64 samples. The pathogens are candida, E.coli and C.leptum (gut), mite, aspergillus and birchgrass (lung), CMV and influenza (virus). As antigen specific T-cells occur in such low numbers, they are first pre-enriched for CD4. The CD154 distribution is compared to that of an unstimulated sample for that donor, and only events with CD154 greater than the 95th percentile of the unstimlated are included. Among the stimulated cells, the following markers are of interest: IL17, IL22, IFNg, GM-CSF, IL4, IL5 and IL10. T-helper sets are defined as following: Th1 by IFNg, Th2 by IL4 and IL5, Th17 by IL17 and IL22. IL10 is somehow implicated in the dampening of inflammation by regulatory Tcells. Th2 cells are thought/known to be implicated in allergic reactions when they are uncontrolled by Tregs. It is of interest to understand the pathogen specific regulation of coexpression as this points to the underlying transcriptional programmes that regulate cytokine expression. 
+
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+library(flowCore)
+library(pheatmap)
+#library(cluster)
+library(ggplot2)
+#library(reshape)
+library(ade4)
+library(ca)
+library(vcd)
+library(igraph)
+library(glasso)
+library(plyr)
+#library(dunn.text)
+#devtools::load_all(".")
+library(flowR)
+
+defaultpar <- par()
+
+# load data
+
+fn <- list.files('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/')
+Data <- lapply(1:length(fn), function(i) read.FCS(paste('~/2015/2014-12-04_CompareDonorsManuscript/2015-09-24_Rscripts/Tcell/data/', fn[i], sep = '')))
+metadata <- data.frame(t(mapply(function(x) strsplit(strsplit(x, split = '[.]')[[1]][1], '_')[[1]], fn))[, -1])
+
+Markers <- c('IL10', 'IL22', 'GMCSF', 'IL4', 'IFNg', 'IL5', 'IL17', 'CD154')
+markers_index <- c(2, 3, 4, 8, 9, 10, 11, 14)
+
+C <- factor(rep(1:10, 8))
+
+lgcl <- logicleTransform(w = 2, t = 10000, m = 4.5)
+L <- transformList(c("b-LP505 525_50-B-A", "b-LP650 675_20-A-A", "r-670_30-C-A", "v-LP555 575_15-B-A", "v-LP600 610_20-A-A", "yg-585_15-E-A", "yg-LP600 610_20-D-A", "yg-LP750 780_60-A-A"), lgcl)
+D_comp <- mapply(function(x) compensate(x, description(x)$`$SPILLOVER`), Data, SIMPLIFY = FALSE)
+D_comp_lgcl <- mapply(function(x) exprs(transform(x, L)), D_comp, SIMPLIFY = FALSE)
+
+
+
+Data <- mapply(exprs, Data)
+
+# only want events with CD154 above background (i.e. compared to unstimulated cells)
+
+q <- lapply(1:8, function(i) quantile(D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i] & metadata$X2 == '1' & metadata$X3 == '2'][[1]][, 14], 0.95))
+i = 1
+D_comp_cd154 <- lapply(1:8, function(i) {
+  tmp <- D_comp_lgcl[metadata$X1 == levels(metadata$X1)[i]][-c(2, 10)]
+  tmp <- mapply(function(x) x[x[, 14] > q[i], ], tmp, SIMPLIFY = FALSE)
+  return(tmp)
+}
+)
+D_comp_cd154 <- unlist(D_comp_cd154, recursive = FALSE)
+
+D_comp_cd154 <- mapply(function(x) x[, markers_index], D_comp_cd154, SIMPLIFY = FALSE)
+for (i in 1:length(D_comp_cd154)) {
+  colnames(D_comp_cd154[[i]]) <- Markers
+}
+
+D_comp_cd154 <- mapply(as.data.frame, D_comp_cd154, SIMPLIFY = FALSE)
+
+sample_fac <- data.frame(donor = rep(1:8, rep(8, 8)), stim = rep(1:8, 8))
+stim <- c('asp', 'can', 'mite', 'bgr', 'cmv', 'ecoli', 'clep', 'inf')
+stim_type <- rep(c('lung', 'gut', 'lung', 'lung', 'virus', 'gut', 'gut', 'virus'), 8)
+
+
+```
+
+
+
+
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+breaks <- make_breaks(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE))
+breaks[[1]][2] <- 2.75
+breaks[[6]][2] <- 2.5
+breaks[[7]][2] <- 2.75
+
+# normalised to CD154+
+burt <- make_burt(mapply(function(x) x[, 1:7], D_comp_cd154, SIMPLIFY = FALSE), breaks, Markers[1:7])
+# normalised to CD154+ plus at least one producing marker
+burt1 <- mapply(function(x) {x <- x[rowSums(x[, 1:7]) > 7, ]; x$counts <- x$counts/sum(x$counts); return(x)}, burt, SIMPLIFY = FALSE)
+
+
+par(mfrow = c(2, 4))
+for (i in 1:7) {
+g <- unlist(mapply(function(x) x[, i], D_comp_cd154))
+plot(density(g), main = colnames(D_comp_cd154[[1]])[i], xlab = 'intensity')
+abline(v=breaks[[i]][2])
+}
+
+
+```
+
+# Basic statistics
+
+Some basic statistics: proportion of at least single positive, at least double positive, at least triple positive, at least quadruple positive. It is most likely a cell will be single positive, and almost impossible to be quadruple positive. In this dataset, the majority of stained cells are single or double positive. 
+
+_Average proportion of events at least single positive for each marker_
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+# burt_all <- do.call(rbind, burt)
+# t1 <- apply(burt_all[, 1:7], 2, function(y) by(burt_all$counts, y, sum)[2]/length(burt))
+# t1
+
+t1 <- make_summary(burt, 1)
+t1
+``` 
+
+_Average proportion of events at least double positive for each marker_
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+# at least double positive 
+#t2 <- apply(burt_all[, 1:7], 2, function(x) sum(burt_all$counts[rowSums(burt_all[, 1:7]) > 8 & x == 2])/sum(burt_all$counts))
+t2 <- make_summary(burt, 2)
+t2
+```
+
+_Average proportion of events at least triple positive for each marker_
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+# at least triple positive 
+t3 <- make_summary(burt, 3)
+t3
+```
+
+_Average proportion of events at least quadruple positive for each marker_
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+# at least quadruple positive 
+t4 <- make_summary(burt, 4)
+t4
+
+# library(xtable)
+# xtable(cbind(t1, t2, t3, t4), display = rep('e', 5))
+
+```
+
+# Sample level coexpression
+
+
+Construct a 'bulk frequency' matrix where each row is a donor, and each column corresponds to a marker. Each entry is the frequency of events in a donor positive for a marker. Here, 'bulk frequency' corresponds to the proportion of events in a sample that is positive for a marker, and includes single positive events, double positive events, triple positive event etc, and corresponds to a univariate marker histogram.  
+
+The matrix summarises how markers are coexpressed in a sample. It is a bulk measurement that is averaged over all events in a sample. It contains no explicit information about coexpression on the single cell level. However, as the total frequency of each marker is a mixture of single positive and double positive frequencies, it is hidden as a latent process. 
+
+
+## Analysis - Bulk frequency normalised to total CD154+
+
+Make boxplots of bulk frequency for each marker plus non-producers (CD154 single positive), separated by stimulation. Non-producers dominate. It is also possible to group samples by gut, lung and virus. Lung has the most non-producers and least IFNg overall. Virus has the most IFNg and GMSCF overall. Gut has the most IL22 overall. 
+
+```{r,echo=FALSE, warning=FALSE}
+# normalised to CD154+
+sample_coexp_raw <- make_sample_coexp(burt)
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+boxplot(sample_coexp_raw[sample_fac$stim == i, ], ylim = c(0, 1), main = stim[i], axes = FALSE)
+if (i %in% c(6, 7, 8)) {axis(1, at =  1:8, labels = colnames(sample_coexp_raw), las = 2)}
+if (i %in% c(1, 4, 7)) {axis(2)}
+box()
+}
+mtext('bulk frequency normalised to CD154+', outer = TRUE)
+mtext('frequency', side = 2, outer = TRUE)
+par(defaultpar)
+
+par(mfrow = c(1, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+boxplot(sample_coexp_raw[stim_type == 'gut', ], ylim = c(0, 1), main = 'gut', axes = FALSE)
+axis(1, at =  1:8, labels = colnames(sample_coexp_raw), las = 2)
+axis(2)
+box()
+boxplot(sample_coexp_raw[stim_type == 'lung', ], ylim = c(0, 1), main = 'lung', axes = FALSE)
+axis(1, at =  1:8, labels = colnames(sample_coexp_raw), las = 2)
+box()
+boxplot(sample_coexp_raw[stim_type == 'virus', ], ylim = c(0, 1), main = 'virus', axes = FALSE)
+axis(1, at =  1:8, labels = colnames(sample_coexp_raw), las = 2)
+box()
+mtext('frequency', side = 2, outer = TRUE)
+par(defaultpar)
+
+```
+
+Make a correspondence analysis to inspect deviation about expected frequency. It contains the same information as the boxplots above, except the markers are normalised to have equal weighting, e.g. so it is easy to compare IFNg and IL5 despite generally large difference in their frequencies. 
+
+
+```{r,echo=FALSE}
+sample_coexp_raw <- make_sample_coexp(burt)
+N <- sum(sample_coexp_raw)
+sample_coexp_raw <- sample_coexp_raw/N
+ca_sample <- ca(sample_coexp_raw^0.5)
+
+par(mfrow = c(1, 2))
+plot(ca_sample$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_sample$rowcoord, labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+plot(ca_sample$colcoord * 2, type = 'n')
+text(ca_sample$colcoord, labels = colnames(sample_coexp_raw))
+arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+# par(mfrow = c(1, 2))
+# plot(ca_sample$rowcoord[, c(1, 3)], pch = 16,cex = 2,  type = 'n')
+# text(ca_sample$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+# plot(ca_sample$colcoord[, c(1, 3)] * 2, type = 'n')
+# text(ca_sample$colcoord[, c(1, 3)], labels = colnames(sample_coexp_raw))
+# arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 3]*1, lwd = 0.5, length = 0.01)
+# make a correlation network of markers
+# make polar plot
+
+# single_pos <- mapply(function(x) x[rowSums(x[, 1:7]) == 8, ], burt1, SIMPLIFY = FALSE)
+# single_pos_bulk <- make_sample_coexp(single_pos)[, -8]
+# par(mfrow = c(3, 3))
+# for (i in 1:8)
+# boxplot(single_pos_bulk[sample_fac$stim == i, ], ylim = c(0, 1), main = stim[i])
+
+
+
+```
+
+## Analysis of bulk frequency - normalised to total producing CD154+ 
+
+Define 'producing CD154+' as cells that are positive for at least one other marker apart from CD154. Then normalise all further results to the total number of producing CD154+ in each sample. First make a boxplot of bulk frequency - the marker patterns are clearer. There is a general overall pattern common to all stimulations e.g. there are always more IFNg than IL10, IL4, IL5. Again, samples can also be grouped with gut, lung and virus. 
+
+
+```{r,echo=FALSE, warning=FALSE}
+# normalised to total producing CD154+
+sample_coexp_raw <- make_sample_coexp(burt1)[, -8]
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+boxplot(sample_coexp_raw[sample_fac$stim == i, ], ylim = c(0, 1), main = stim[i], axes = FALSE)
+if (i %in% c(6, 7, 8)) {axis(1, at =  1:7, labels = colnames(sample_coexp_raw)[-8], las = 2)}
+if (i %in% c(1, 4, 7)) {axis(2)}
+box()
+}
+mtext('bulk frequency normalised to producing CD154+', outer = TRUE)
+mtext('frequency', side = 2, outer = TRUE)
+par(defaultpar)
+
+
+
+par(mfrow = c(1, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+boxplot(sample_coexp_raw[stim_type == 'gut', ], ylim = c(0, 1), main = 'gut', axes = FALSE)
+axis(1, at =  1:7, labels = colnames(sample_coexp_raw)[-8], las = 2)
+axis(2)
+box()
+boxplot(sample_coexp_raw[stim_type == 'lung', ], ylim = c(0, 1), main = 'lung', axes = FALSE)
+axis(1, at =  1:7, labels = colnames(sample_coexp_raw)[-8], las = 2)
+box()
+boxplot(sample_coexp_raw[stim_type == 'virus', ], ylim = c(0, 1), main = 'virus', axes = FALSE)
+axis(1, at =  1:7, labels = colnames(sample_coexp_raw)[-8], las = 2)
+box()
+mtext('frequency', side = 2, outer = TRUE)
+par(defaultpar)
+```
+
+Correspondence analysis of bulk frequency matrix. It is fairly similar to the correspondence analysis above, indicating that it is the relative variation of markers that contributes most to a sample's 'fingerprint'. 
+
+
+```{r,echo=FALSE}
+N <- sum(sample_coexp_raw)
+sample_coexp_raw <- sample_coexp_raw/N
+ca_sample <- ca(sample_coexp_raw^0.5)
+
+par(mfrow = c(1, 2))
+plot(ca_sample$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_sample$rowcoord, labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+plot(ca_sample$colcoord * 2, type = 'n')
+text(ca_sample$colcoord, labels = colnames(sample_coexp_raw))
+arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+# par(mfrow = c(1, 2))
+# plot(ca_sample$rowcoord[, c(1, 3)], pch = 16,cex = 2,  type = 'n')
+# text(ca_sample$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+# plot(ca_sample$colcoord[, c(1, 3)] * 2, type = 'n')
+# text(ca_sample$colcoord[, c(1, 3)], labels = colnames(sample_coexp_raw))
+# arrows(0, 0, ca_sample$colcoord[, 1]*1, ca_sample$colcoord[, 3]*1, lwd = 0.5, length = 0.01)
+# make a correlation network of markers
+# make polar plot
+# repeat this within gut, lung, virus categories
+```
+
+# Analysis of double positive matrix, normalised to total producing CD154+
+
+In a manual analysis, a sequence of bivariate dotplots is inspected. The sequence depends on prior biological knowledge to constrain the number of dotplots. Inspecting every single dotplot rapidly becomes infeasible as the number of markers grow. 
+
+Here is a method to automatically analyse every single dotplot. For each sample, the frequency of events in the double positive quadrant of each dotplot is recorded. Then the dotplots are clustered according to whether the double positive frequencies expand and contract together. 
+
+First find how the dotplots are correlated with each other - make a dendrogram. The correlations are constrained by only considering those between neighbouring pairs, e.g. IL17-IL22 and IL17-IFNg as these two dotplots are overlapping in IL17. Choose the clusters by eye (because it's still quite small). The three classical subsets Th1, Th2 and Th17 are retrieved. 
+
+
+The groups are:
+
+* __Th2__ _IL5-IL4_, IL17-IL4, IL17-IL5, IL4-GMCSF, IL5-GMCSF, IL4-IL10, IL5-IL10, IL4-IL22, IL5-IL22
+* __Th1__ GMCSF-IL10,  IFNg-IL10, _IFNg-GMCSF_, IFNg-IL4, IL5-IFNg
+* __Th17__ IFNg-IL22, IL17-IFNg, _IL17-IL22_, GMCSF-IL22, IL17-GMCSF, IL22-IL10, IL17-IL10
+
+```{r, warning=FALSE,echo=FALSE,message=FALSE}
+
+
+
+cell_coexp_raw <- make_cell_coexp(burt1, Markers)
+missing_vals <- apply(cell_coexp_raw, 2, function(x) length(which(x == 0)))/length(burt1)
+
+indicator_square <- make_mask(colnames(cell_coexp_raw), Markers, '_')
+
+c <- cor(cell_coexp_raw) * indicator_square
+d <- sqrt(0.5 * (1 - c)) #arxiv:1208.3145
+#pheatmap(d)
+hc <- hclust(as.dist(d), method = 'average')
+par(mfrow = c(1, 1))
+plot(hc, main = 'relationship of double positive frequencies')
+
+sample_coexp_raw <- make_sample_coexp(burt1)[, -8]
+cc <- make_cross_correlation(sample_coexp_raw, cell_coexp_raw)
+pheatmap(cc[, hc$order], cluster_cols = FALSE, main = 'cross correlation matrix')
+# pheatmap(cor(cell_coexp_raw)[hc$order, hc$order], cluster_cols = FALSE, cluster_rows = FALSE)
+```
+
+This boxplot summarises the frequency of producing CD154+ cells that are at least double positive. Influenza generally has the most. Maybe because the Influenza response is so dominated by IFNg that there are fewer single positive cells for other markers?
+
+
+```{r,echo=FALSE}
+# number of cells wrt producing CD154+ that are at least double positive
+par(mfrow = c(1, 1))
+boxplot(sapply(1:length(burt1), function(i) sum(burt1[[i]][rowSums(burt1[[i]][, 1:7]) > 8, ]$counts)) ~ factor(sample_fac$stim), axes = FALSE, main = 'proportion at least double positive', xlab = 'frequency')
+axis(1, at = 1:8, labels = stim, las = 2)
+axis(2)
+box()
+
+```
+
+Make network plots of each subset, to understand how the bivariate dotplots are overlapping. In these plots, each edge represents a dotplot, and the edge connects the markers involved in the dotplot. When the edges form a triangle, this means that the triple positive combination is included in the subset, e.g. IFNg-GMCSF-IL10 in Th1. 
+
+
+```{r,echo=FALSE}
+
+# manually construct a data frame with double positive subset annotation
+marker_pairs <- as.data.frame(do.call(rbind, strsplit(colnames(cell_coexp_raw), split = '_')))
+marker_pairs <- marker_pairs[hc$order, ]
+marker_pairs$V1 <- factor(marker_pairs$V1, levels = Markers[-8])
+marker_pairs$V2 <- factor(marker_pairs$V2, levels = Markers[-8])
+marker_pairs$subset <- factor(rep(c('Th1', 'Th2', 'Th17'), c(5, 9, 7)))
+
+# make graphs of pre-defined groups of marker pairs, find the triangles in each graph
+markers <- data.frame(markers = Markers[-8])
+subgraphs <- list(Th17 = marker_pairs[15:21, 1:2], Th1 = marker_pairs[1:5, 1:2], Th2 = marker_pairs[6:14, 1:2])
+subgraphs <- mapply(make_subgraph, subgraphs, SIMPLIFY = FALSE, markers)
+triangles <- mapply(get_triangles, subgraphs, SIMPLIFY = FALSE)
+
+# find triangles in merged graphs, that don't occur 
+bridge_tri <- bridge_triangles(subgraphs, triangles)
+
+
+
+plot(subgraphs[[1]], vertex.size = 0, main = names(subgraphs)[[1]], vertex.shape = 'none', edge.width = 5, vertex.label.cex = 2)
+plot(subgraphs[[2]], vertex.size = 0, main = names(subgraphs)[[2]], vertex.shape = 'none', edge.width = 5, vertex.label.cex = 2)
+plot(subgraphs[[3]], vertex.size = 0, main = names(subgraphs)[[3]], vertex.shape = 'none', edge.width = 5, vertex.label.cex = 2)
+
+
+```
+
+
+```{r,echo=FALSE}
+
+
+# doublepos_events <- function(donor, pairs) { # takes a burt table for one donor and a data frame describing the double positive pairs. returns a vector specifying whether a row in the burt table belongs to the subset described by the dataframe. 
+#   as.integer(Reduce('+', lapply(1:nrow(pairs), function(i) donor[[pairs[i, 1]]] == 2 & donor[[pairs[i, 2]]] == 2)) > 0) + 1
+# }
+# 
+# singlepos_events <- function(donor, marker, bulkmarkers) { # takes a burt table for one donor and a marker name. returns a vector specifying whether a row in the burt table is single positive for that marker
+#   as.integer(rowSums(donor[bulkmarkers]) == 8 & donor[[marker]] == 2) + 1 
+# }
+
+subset_levels <- levels(marker_pairs$subset)
+
+# updates the burt matrices to include Th1, Th2, Th17
+burt1_update <- burt1
+for (i in 1:length(subset_levels)) {
+tmp <- marker_pairs[marker_pairs$subset == subset_levels[[i]], 1:2]
+dp_events <- lapply(burt1_update, function(.donor) doublepos_events(.donor, tmp))
+burt1_update <- mapply(function(x, y) {x[[subset_levels[[i]]]] <- y; return(x)}, burt1_update, dp_events, SIMPLIFY = FALSE)
+}
+
+# updates the burt matrices to include single positives for the 7 markers
+for (i in 1:length(Markers[-8])) {
+sp_events <- lapply(burt1_update, function(.donor) singlepos_events(.donor, Markers[i], Markers[-8]))
+newname <- paste(Markers[i], '_single', sep = '')
+burt1_update <- mapply(function(x, y) {x[[newname]] <- y; return(x)}, burt1_update, sp_events, SIMPLIFY = FALSE)
+}
+
+
+
+```
+
+
+## Partition bulk frequency into single positive plus double positive subsets. 
+
+
+As mentioned above, the bulk frequency matrix above is a mixture of single positive and double/triple etc positive events. The double positive frequency matrix was analysed and yielded three subsets of cells that are at least double positive: Th1, Th2, Th17. Then, every producing CD154+ cell can be classified as to whether it is single positive for one of the seven markers, or belonging to one of three double positive subsets. If a cell is classified as single positive, it will have only one unique classification. However, by definition, it is possible for a cell to have more than one double positive classification, i.e. it can simultaneously be Th1 and Th17. This overlap will be inspected in more detail below. Firstly, there are 10 possible classes a cell can belong to, and a new frequency matrix can be generated. First, make boxplots and correspondence analysis. 
+
+```{r,echo=FALSE, warning=FALSE}
+
+subsets <- mapply(function(x) x[c('Th1', 'Th2', 'Th17', 'IL10_single', 'IL22_single', 'GMCSF_single', 'IL4_single', 'IFNg_single', 'IL5_single', 'IL17_single', 'counts', 'which')], burt1_update, SIMPLIFY = FALSE)
+subsets_bulk <- make_sample_coexp(subsets)[, -11]
+
+ # Is it interesting to say when, within a sample, the magnitudes of subset frequency swaps? e.g. IFNg is always the most frequent cell type except for two cases where there are more IL22 cells. This would (probably) require that there are more IL22 than expected, and less IFNg than expected, and therefore this viewpoint is not automatically available from just looking at which subsets are more or less frequent than expected
+
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+boxplot(subsets_bulk[sample_fac$stim == i, ], ylim = c(0, 1), main = stim[i], axes = FALSE)
+if (i %in% c(6, 7, 8)) {axis(1, at =  1:10, labels = colnames(subsets_bulk), las = 2)}
+if (i %in% c(1, 4, 7)) {axis(2)}
+box()
+}
+mtext('frequency of subsets normalised to producing CD154+', outer = TRUE)
+mtext('frequency', side = 2, outer = TRUE)
+par(defaultpar)
+
+
+
+ca_subsets <- ca(subsets_bulk^0.5)
+par(mfrow = c(1, 2))
+plot(ca_subsets$rowcoord[, c(1, 2)], pch = 16,cex = 2,  type = 'n')
+text(ca_subsets$rowcoord[, c(1, 2)], labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+plot(ca_subsets$colcoord[, c(1, 2)] * 2, type = 'n')
+text(ca_subsets$colcoord[, c(1, 2)], labels = colnames(subsets_bulk))
+arrows(0, 0, ca_subsets$colcoord[, 1]*1, ca_subsets$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+# ca_subsets <- ca(subsets_bulk^0.5)
+# par(mfrow = c(1, 2))
+# plot(ca_subsets$rowcoord[, c(1, 3)], pch = 16,cex = 2,  type = 'n')
+# text(ca_subsets$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim], col = as.numeric(factor(sample_fac$stim)))
+# plot(ca_subsets$colcoord[, c(1, 3)] * 2, type = 'n')
+# text(ca_subsets$colcoord[, c(1, 3)], labels = colnames(subsets_bulk))
+# arrows(0, 0, ca_subsets$colcoord[, 1]*1, ca_subsets$colcoord[, 3]*1, lwd = 0.5, length = 0.01)
+```
+
+
+This heatmap represents whether a sample type is over or underrepresented in each cell subset, compared to the average frequency over all samples. Red is overrepresented, blue is underrepresented and yellow means no difference from average. 
+
+
+```{r,echo=FALSE}
+# make scaled matrix that would be used as input for CA
+A <- subsets_bulk^0.5
+A <- A/sum(A)
+r <- rowSums(A)
+c <- colSums(A)
+E <- r %*% t(c)
+U <- A - E
+U <- diag(1/r^0.5) %*% U %*% diag(1/c^0.5)
+
+# par(mfrow = c(3, 4))
+# for (i in 1:11){ # Making a boxplot of U or A is the same because when row weights are nearly equal, it is equivalent to column scaling
+# boxplot(U[, i] ~ factor(sample_fac$stim))
+# abline(h = 0)
+# }
+
+
+
+# par(mfrow = c(3, 3))
+# for (i in 1:8){ # boxplots of U vs. A are different. A shows the absolute magnitude profile, U shows the deviation around the average profile
+#   boxplot(U[sample_fac$stim == i, ]  , xaxt = 'n', main = stim[i], ylim = c(-0.05, 0.08))
+# axis(1, at = 1:10, labels = colnames(subsets_bulk), las = 2)
+# abline(h = 0)
+# }
+
+
+boot_mean <- function(x, N) { # needs more representative name
+  tmp <- length(which(replicate(N, mean(sample(x, replace = TRUE))) > 0))/N
+  if (tmp > 0.95) {return(1)} else {if (tmp < 0.05) {return(-1)} else {return(0)}}
+  return(tmp)
+  }
+
+set.seed(42)
+frequency_summary <- apply(U, 2, function(x) by(x, factor(sample_fac$stim), boot_mean, 5000))
+rownames(frequency_summary) <- stim
+colnames(frequency_summary) <- colnames(subsets_bulk)
+pheatmap(frequency_summary)
+
+```
+
+
+```{r,echo=FALSE}
+#Here are the 3 triple positive combinations that bridge Th1 and Th17
+
+
+#mapply(function(x) paste(names(x), collapse = '-'), triangles[[1]])
+#mapply(function(x) paste(names(x), collapse = '-'), triangles[[2]])
+
+
+# apply(bridge_tri[[1]], 2, function(x) paste(names(V(subgraphs[[1]]))[x], collapse = '-'))
+
+```
+
+
+# Analysis of the three double positive subsets. 
+
+The bulk frequency analysis (the very first step of this analysis) can be recursively applied to the three double positive subsets (Th1, Th2, Th17), in order to efficiently inspect their composition. 
+
+
+## Th1 cells
+
+First display a boxplot of the proportion of Th1 cells relative to producing CD154+ cells. The median number of Th1 cells is between 10% and 40%. Influenza has the most. 
+
+
+
+
+```{r,echo=FALSE, warning=FALSE}
+
+th1_sample <- lapply(burt1_update, function(.b) {.b <- .b[.b$Th1 == 2, 1:9]; return(.b)})
+c_th1 <- mapply(function(x) sum(x$counts), th1_sample)
+par(mfrow = c(1, 1))
+boxplot(c_th1 ~ sample_fac$stim, xaxt = 'n', main = 'frequency of Th1 cells (normalised to producing CD154+)', ylab = 'frequency')
+axis(1, at = 1:8, labels = stim, las = 2)
+
+th1_sample <- lapply(th1_sample, function(.x) {.x$counts <- .x$counts/sum(.x$counts); return(.x)})
+empty <- mapply(nrow, th1_sample)
+th1_bulk <- make_sample_coexp(th1_sample[empty > 0])[, -8]
+
+```
+
+In the bulk frequency matrix, almost every cell in this subset is positive for IFNg. Many are also positive for GMCSF, but slightly fewer than for IFNg. Sometimes the proportion of IL22 positive is quite high (e.g. Ecoli) - but these are not just IFNg-IL22 cells - they must be positive for something else as well, as IL22 is not included in this subset. Remove IFNg from the CA, because almost everything is positive. 
+
+```{r,echo=FALSE,warning=FALSE}
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+  boxplot(th1_bulk[(sample_fac$stim == i)[empty > 0], ],  main = stim[i], axes = FALSE)
+  if (i %in% c(7, 8, 6)) {axis(1, at = 1:7, labels = Markers[-8], las = 2)}
+  if (i %in% c(1, 4, 7)) {axis(2)}
+  box()
+      
+}
+mtext('Bulk frequency in Th1 subset', outer = TRUE)
+par(defaultpar)
+
+
+ca_th1 <- ca(th1_bulk[, -5]^0.5)
+par(mfrow = c(1, 2))
+plot(ca_th1$rowcoord, pch = 16,cex = 2,  type = 'n')
+text(ca_th1$rowcoord, labels = stim[sample_fac$stim[empty > 0]], col = as.numeric(factor(sample_fac$stim[empty > 0])))
+plot(ca_th1$colcoord * 2, type = 'n')
+text(ca_th1$colcoord, labels = colnames(th1_bulk)[-5])
+arrows(0, 0, ca_th1$colcoord[, 1]*1, ca_th1$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+```
+
+
+For each subset it is also possible to determine whether a marker is over or underrepresented according to the subset's size (in each sample). For example, in a sample the frequency of Th1 might be 10%. However, the Th1 subset in this sample contains 30% of the total IFNg available. Therefore, it gets an overrepresentation score of 0.3 - 0.1 = 0.2.
+
+IL10 is over-represented in the Th1 subset, suggesting a tolerogenic response within the Th1 response (IL10 frequency is in general much smaller that IFNg frequency so the tolerogenic response must be a subset of the total response).  The Th1 subset in INF is highly under-represented in IL22 and IL17 suggesting a strict separation between Th1 and Th17. However, for CMV, there is more of a tendency towards proportional representation, suggesting the possibility of overlap (cell plasticity?). 
+
+This subset is dominated by IFNg and GMCSF, as all samples without exception are overrepresented. 
+
+IL4 is mostly overrepresented in Th1, except in INF where it is mostly underrepresented. CMV  are in particular highly overrepresented - most IL4 being produced is found in this subset. CMV is sometimes overrepresented for IL5, all other samples are mostly underrepresented. 
+
+
+```{r,echo=FALSE, warning=FALSE}
+
+# subset_marker <- 
+# lapply(1:7, function(i) {
+# h <- 
+# sapply(burt1_update, function(.tmp) {
+# a1 <- sum(.tmp[.tmp[, i] == 2 & rowSums(.tmp[, 1:7]) > 8, 'counts'])
+# a2 <- sum(.tmp[.tmp[, i] == 2 & .tmp$th1 == 2, 'counts'])
+# a2/a1
+# }
+# )
+# return(h)
+# }
+# )
+
+
+subset_marker <- 
+lapply(1:7, function(i) {
+h <- 
+sapply(burt1_update, function(.tmp) {
+a1 <- sum(.tmp[.tmp[, i] == 2, 'counts'])
+a2 <- sum(.tmp[.tmp[, i] == 2 & .tmp$Th1 == 2, 'counts'])
+a2/a1
+}
+)
+return(h)
+}
+)
+
+
+
+c_th1 <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th1 == 2, 'counts']))
+
+par(mfrow = c(2, 4)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+
+for (i in 1:7) {
+boxplot((subset_marker[[i]] - c_th1)[empty > 0] ~ factor(sample_fac$stim[empty > 0]), axes = FALSE, main = Markers[i], ylim = c(-1, 1))
+#abline(h = median(subset_marker[[i]]))
+abline(h= 0)
+if (i %in% c(1, 5)) {axis(2)}
+if (i %in% c(5, 6, 7, 4)) {axis(1, at = 1:8, labels = stim, las = 2)}
+box()
+}
+mtext('Over/under representation of markers in Th1', outer = TRUE)
+par(defaultpar)
+
+```
+
+
+
+
+
+
+## Th17
+
+Th17 median frequency varies between 5% and 30%. IL22 is the driver of this subset, with nearly all cells being positive. IL17 is much less often positive. For Ecoli, a very large proportion is positive for IFNg. How do these overlap with the cells that are in Th1? It is possible that there is a core that are strictly double positive and then some overlap with Th1. Also, how many of these IFNg-IL22 cells are overlapping with IL17? 
+
+The first CA doesn't show a very clear relationship because there are a few outliers - but actually IL4, IL5 and IL10 have very low counts and so their variation has too much influence. Repeat the CA with only IL17, IL22, IFNg and GMCSF. 
+
+
+
+
+
+```{r,echo=FALSE, warning=FALSE}
+
+th17_sample <- lapply(burt1_update, function(.b) {.b <- .b[.b$Th17 == 2, 1:9]; return(.b)})
+c_th17 <- mapply(function(x) sum(x$counts), th17_sample)
+par(mfrow = c(1, 1))
+boxplot(c_th17 ~ sample_fac$stim, xaxt = 'n', main = 'frequency of Th17 cells (normalised to producing CD154+)')
+axis(1, at = 1:8, labels = stim, las = 2)
+
+
+th17_sample <- lapply(th17_sample, function(.x) {.x$counts <- .x$counts/sum(.x$counts); return(.x)})
+empty <- mapply(nrow, th17_sample)
+th17_bulk <- make_sample_coexp(th17_sample[empty > 0])[, -8]
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+  boxplot(th17_bulk[(sample_fac$stim == i)[empty > 0], ],  main = stim[i], axes = FALSE)
+  if (i %in% c(7, 8, 6)) {axis(1, at = 1:7, labels = Markers[-8], las = 2)}
+  if (i %in% c(1, 4, 7)) {axis(2)}
+  box()
+      
+}
+mtext('Bulk frequency in Th17 subset', outer = TRUE)
+par(defaultpar)
+
+
+
+
+
+ca_th17 <- ca(th17_bulk[, c(2, 3, 5, 7)]^0.5)
+par(mfrow = c(1, 2))
+plot(ca_th17$rowcoord[, c(1, 2)], pch = 16,cex = 2,  type = 'n')
+text(ca_th17$rowcoord[, c(1, 2)], labels = stim[sample_fac$stim[empty > 0]], col = as.numeric(factor(sample_fac$stim[empty > 0])))
+plot(ca_th17$colcoord[, c(1, 2)] * 2, type = 'n')
+text(ca_th17$colcoord[, c(1, 2)], labels = Markers[c(2, 3, 5, 7)])
+arrows(0, 0, ca_th17$colcoord[, 1]*1, ca_th17$colcoord[, 2]*1, lwd = 0.5, length = 0.01)
+
+
+# ca_th17 <- ca(th17_bulk[, c(2, 3, 5, 7)]^0.5)
+# par(mfrow = c(1, 2))
+# plot(ca_th17$rowcoord[, c(1, 3)], pch = 16,cex = 2,  type = 'n')
+# text(ca_th17$rowcoord[, c(1, 3)], labels = stim[sample_fac$stim[empty > 0]], col = as.numeric(factor(sample_fac$stim[empty > 0])))
+# plot(ca_th17$colcoord[, c(1, 3)] * 2, type = 'n')
+# text(ca_th17$colcoord[, c(1, 3)], labels = Markers[c(2, 3, 5, 7)])
+# arrows(0, 0, ca_th17$colcoord[, 1]*1, ca_th17$colcoord[, 3]*1, lwd = 0.5, length = 0.01)
+```
+
+IL17 and IL22 are overrepresented in Th17 across the board. IL10 is fairly proportionally represented, except in Ecoli, which is slightly underrepresented. IL4 and IL5 are generally underrepresented. IFNg is slightly overrepresented in Ecoli. 
+
+
+```{r,echo=FALSE,warning=FALSE}
+subset_marker <- 
+lapply(1:7, function(i) {
+h <- 
+sapply(burt1_update, function(.tmp) {
+a1 <- sum(.tmp[.tmp[, i] == 2, 'counts'])
+a2 <- sum(.tmp[.tmp[, i] == 2 & .tmp$Th17 == 2, 'counts'])
+a2/a1
+}
+)
+return(h)
+}
+)
+
+c_th17 <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th17 == 2, 'counts']))
+
+par(mfrow = c(2, 4)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+
+for (i in 1:7) {
+boxplot((subset_marker[[i]] - c_th17)[empty > 0] ~ factor(sample_fac$stim[empty > 0]), axes = FALSE, main = Markers[i], ylim = c(-1, 1))
+#abline(h = median(subset_marker[[i]]))
+abline(h= 0)
+if (i %in% c(1, 5)) {axis(2)}
+if (i %in% c(5, 6, 7, 4)) {axis(1, at = 1:8, labels = stim, las = 2)}
+box()
+}
+mtext('Over/under representation of markers in Th17', outer = TRUE)
+par(defaultpar)
+
+
+```
+
+## Th 2
+
+On average, the lung sample types have the most Th2. The virus sample types are skewed, with half having very few/zero, and then having a longer right tail. The gut sample types generally have few Th2 cells.
+
+Inspecting the bulk frequency matrix, IL4 is the dominant marker, for which many events are positive. There are generally substantially fewer IL5 positive events than IL4 (with the possible exception of C. leptum). 
+
+```{r,echo=FALSE,warning=FALSE}
+
+th2_sample <- lapply(burt1_update, function(.b) {.b <- .b[.b$Th2 == 2, 1:9]; return(.b)})
+c_th2 <- mapply(function(x) sum(x$counts), th2_sample)
+par(mfrow = c(1, 1))
+boxplot(c_th2 ~ sample_fac$stim, xaxt = 'n', main = 'frequency of Th2 cells (normalised to producing CD154+)')
+axis(1, at = 1:8, labels = stim, las = 2)
+
+
+
+th2_sample <- lapply(th2_sample, function(.x) {.x$counts <- .x$counts/sum(.x$counts); return(.x)})
+empty <- mapply(nrow, th2_sample)
+th2_bulk <- make_sample_coexp(th2_sample[empty > 0])[, -8]
+
+par(mfrow = c(3, 3)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+for (i in 1:8) {
+  boxplot(th2_bulk[(sample_fac$stim == i)[empty > 0], ],  main = stim[i], axes = FALSE)
+  if (i %in% c(7, 8, 6)) {axis(1, at = 1:7, labels = Markers[-8], las = 2)}
+  if (i %in% c(1, 4, 7)) {axis(2)}
+  box()
+      
+}
+mtext('Bulk frequency in Th2 subset', outer = TRUE)
+par(defaultpar)
+```
+
+The Th2 subset is highly overrepresented in IL4 and IL5. The other markers are more or less proportionally represented. 
+
+```{r,echo=FALSE,warning=FALSE}
+subset_marker <- 
+lapply(1:7, function(i) {
+h <- 
+sapply(burt1_update, function(.tmp) {
+a1 <- sum(.tmp[.tmp[, i] == 2, 'counts'])
+a2 <- sum(.tmp[.tmp[, i] == 2 & .tmp$Th2 == 2, 'counts'])
+a2/a1
+}
+)
+return(h)
+}
+)
+
+c_th2 <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th2 == 2, 'counts']))
+
+par(mfrow = c(2, 4)) 
+par(cex = 0.6)
+par(mar = c(0, 0, 2, 0), oma = c(4, 4, 3, 0.5))
+par(tcl = -0.25)
+par(mgp = c(2, 0.6, 0))
+
+for (i in 1:7) {
+boxplot((subset_marker[[i]] - c_th2)[empty > 0] ~ factor(sample_fac$stim[empty > 0]), axes = FALSE, main = Markers[i], ylim = c(-0.5, 1))
+#abline(h = median(subset_marker[[i]]))
+abline(h= 0)
+if (i %in% c(1, 5)) {axis(2)}
+if (i %in% c(5, 6, 7, 4)) {axis(1, at = 1:8, labels = stim, las = 2)}
+box()
+}
+mtext('Over/under representation of markers in Th17', outer = TRUE)
+par(defaultpar)
+
+```
+
+# Analysis of overlap between double positive subsets. 
+
+Above, all marker pairs were analysed and it was found they split into 3 major groups corresponding to Th1, Th2 and Th17. However, there is still the possibility that there is overlap between these three subsets due to marker triplets that are not contained within the 3 subsets. This is a useful method for defining and inspecting cell plasticity in manner that respects their position on a continuum, rather than forcing cells to exist in discrete subsets.  
+
+## Th1-Th17 overlap
+
+Firstly find the frequencies of the triplets that bridge Th1 and Th17. The frequencies are displayed in a boxplot, and the triplets IL22-GMCSF-IFNg and GMCSF-IFNg-IL17 have the most substantial counts. Next, display the total overlap frequency split by sample type in a boxplot. E. coli and Candida have the largest overlaps, however these overlaps occur in appreciable numbers in all sample types. 
+
+```{r,echo=FALSE,warning=FALSE}
+
+h <- apply(bridge_tri[[1]], 2, function(x) paste(names(V(subgraphs[[1]]))[x], collapse = '-'))
+
+overlap_th1_th17 <- 
+sapply(burt1_update, function(.tmp) {
+apply(bridge_tri[[1]], 2, function(x) sum(.tmp[rowSums(.tmp[, x]) == 6, 'counts']))
+}
+)
+
+par(mar = c(6, 2, 2, 0.5), mfrow = c(1, 1))
+boxplot(t(overlap_th1_th17), xaxt = 'n', main = 'frequency in bridge triplets')
+axis(1, at = 1:ncol(bridge_tri[[1]]), labels = h, las = 2, cex.axis = 0.5)
+par(defaultpar)
+
+par(mfrow = c(1, 1))
+boxplot(colSums(overlap_th1_th17) ~ sample_fac$stim, xaxt = 'n', main = 'total overlap of Th1 and Th17')
+axis(1, at = 1:8, labels = stim, las = 2)
+```
+
+Normalise the overlap to both the size of Th1 and Th17, and plot against the size of Th1 and Th17 respectively. E. coli (pink) has a small proportion of Th1 relative to Influenza (grey), but a large proportion Th1 is overlapping with Th17. In contrast, Influenza has large numbers of Th1 but almost none of Th1 has an overlap with Th17. 
+
+
+```{r,echo=FALSE}
+g <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th1 == 2 & .tmp$Th17 == 2, 'counts']))
+g1 <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th1 == 2, 'counts']))
+g2 <- sapply(burt1_update, function(.tmp) sum(.tmp[.tmp$Th17 == 2, 'counts']))
+par(mfrow = c(1, 2))
+plot(g1, g/g1, pch = 16, cex = 2, col = as.numeric(factor(sample_fac$stim)), xlab = 'proportion Th1', ylab = 'proportion overlap', main = 'overlap normalised to Th1')
+plot(g2, g/g2, pch = 16, cex = 2, col = as.numeric(factor(sample_fac$stim)), xlab = 'proportion Th17', ylab = 'proportion overlap', main = 'overlap normalised to Th17')
+
+
+```
+
+
+## Overlap Th17 and Th2
+
+There is no stand-out triplet, however, Birch/grass has the most overlap in total (but less than 2%)
+
+```{r,echo=FALSE, warning=FALSE}
+h <- apply(bridge_tri[[2]], 2, function(x) paste(names(V(subgraphs[[1]]))[x], collapse = '-'))
+
+overlap_th1_th17 <- 
+sapply(burt1_update, function(.tmp) {
+apply(bridge_tri[[2]], 2, function(x) sum(.tmp[rowSums(.tmp[, x]) == 6, 'counts']))
+}
+)
+
+par(mar = c(6, 2, 2, 0.5), mfrow = c(1, 1))
+boxplot(t(overlap_th1_th17), xaxt = 'n', main = 'frequency in bridge triplets')
+axis(1, at = 1:ncol(bridge_tri[[2]]), labels = h, las = 2, cex.axis = 0.5)
+par(defaultpar)
+
+par(mfrow = c(1, 1))
+boxplot(colSums(overlap_th1_th17) ~ sample_fac$stim, xaxt = 'n', main = 'total overlap of Th17 and Th2')
+axis(1, at = 1:8, labels = stim, las = 2)
+```
+
+
+## Overlap Th1 and Th2
+
+There is no stand-out triplet, however, Aspergillus has the most overlap in total (but less than 1%)
+
+
+```{r,echo=FALSE,warning=FALSE}
+###
+
+h <- apply(bridge_tri[[3]], 2, function(x) paste(names(V(subgraphs[[1]]))[x], collapse = '-'))
+
+overlap_th1_th17 <- 
+sapply(burt1_update, function(.tmp) {
+apply(bridge_tri[[3]], 2, function(x) sum(.tmp[rowSums(.tmp[, x]) == 6, 'counts']))
+}
+)
+
+par(mar = c(6, 2, 2, 0.5), mfrow = c(1, 1))
+boxplot(t(overlap_th1_th17), xaxt = 'n', main = 'frequency in bridge triplets')
+axis(1, at = 1:ncol(bridge_tri[[3]]), labels = h, las = 2, cex.axis = 0.5)
+par(defaultpar)
+
+par(mfrow = c(1, 1))
+boxplot(colSums(overlap_th1_th17) ~ sample_fac$stim, xaxt = 'n', main = 'total overlap of Th1 and Th2')
+axis(1, at = 1:8, labels = stim, las = 2)
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
